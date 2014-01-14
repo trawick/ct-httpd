@@ -14,7 +14,7 @@ This document refers to the following additional applications used as part of ad
 2. Log auditing application
   * A web proxy when communicating with untrusted TLS servers will queue data for auditing, to be processed off-line by the log auditing application; the proxy should make a best effort attempt to avoid queuing duplicate information.  Log auditing failures should be reflected in the set of logs known to the proxy server, though that may require manual intervention by the administrator. 
 
-Several "SSL variables" are referred to in the description.  Such variables are useful as information for web applications, for custom logging, and in some cases specific server processing can be triggered by specific values. 
+Several "SSL variables" are referred to in the description.  Such variables are useful as information for web applications, for custom logging, and in some cases specific server processing can be triggered by specific values.  (These variables are often referred to as [environment variables](http://httpd.apache.org/docs/2.4/mod/mod_ssl.html#envvars), though in the case of mod_ssl they constitute a more general API.)
 
 # Part I, Web server 
 
