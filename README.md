@@ -12,7 +12,8 @@ This document refers to the following additional applications used as part of ad
 1. log submission application
   * The web/proxy server administrator uses this tool to submit a server certificate to a log and obtain an SCT in a suitable format.  This tool can maintain a set of SCTs in a suitable format as certificates are submitted to multiple logs. 
 2. Log auditing application
-  * A web proxy when communicating with untrusted TLS servers will queue data for auditing, to be processed off-line by the log auditing application; the proxy should make a best effort attempt to avoid queuing duplicate information.  Log auditing failures should be reflected in the set of logs known to the proxy server, though that may require manual intervention by the administrator. 
+  * A web proxy when communicating with untrusted TLS servers will queue data for auditing, to be processed off-line by the log auditing application.  The auditing application should expect to see duplicate input.
+  * Log auditing failures should be reflected in the set of logs known to the proxy server, though that may require manual intervention by the administrator. 
 
 Several "SSL variables" are referred to in the description.  Such variables are useful as information for web applications, for custom logging, and in some cases specific server processing can be triggered by specific values.  (These variables are often referred to as [environment variables](http://httpd.apache.org/docs/2.4/mod/mod_ssl.html#envvars), though in the case of mod_ssl they constitute a more general API.)
 
@@ -68,7 +69,7 @@ When an SCT is provided during the handshake, the proxy can determine if the SCT
 
 The CertificateStatus extension should always be included in the ClientHello when SCT processing is enabled; it may of course be enabled for other reasons. 
 
-Log auditing is an asynchronous operation, so the server certificate and SCT(s) must be stored, presumably without duplicates, for use by auditing. 
+Log auditing is an asynchronous operation, so the server certificate and SCT(s) must be stored for use by auditing. As the same backend servers will likely be accessed frequently by the proxy, it may be necessary for the proxy to avoid storing duplicated information indiscriminately to control resource consumption though the auditing mechanism should handle duplications appropriately.
 
 SCT processing for trusted back-end servers (typical for reverse proxy) should be easy to disable, even in “SCT-required” mode.  Presumably if certificate validation is explicitly disabled for a back-end server then SCT processing would not be desired either. 
 
