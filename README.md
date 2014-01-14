@@ -22,6 +22,7 @@ Supporting TLS communication from a client to a server (possibly upgraded after 
 
 ## Web server is configured in “SCT-required” mode 
 
+* The processing described is for clients which request an SCT.  A client which is able to handle an SCT in **any** form **must** handle all forms, so a client that does not include the CertificateStatus extension is an *unaware* client.
 * The administrator may need to use the log submission tool to submit a server certificate and obtain an SCT. 
   * This must be used if the SCT is not in a certificate extension and the SCT is not returned by the OCSP server. 
   * This may be used to add responses from one or more additional logs that a client may require. 
@@ -29,16 +30,18 @@ Supporting TLS communication from a client to a server (possibly upgraded after 
   * Processing should fail at the earliest point practical if this requirement is not met, which may be at the time of server startup or during the handshake. 
     * The server can check for the extension in the certificate or the TLS extension in foo.pem at startup. 
     * The earliest (practical) point that the OCSP stapling response may be examined will vary according to the server implementation. 
-    * If a particular ClientHello does not include the Certificate Status extension, SCTs can only be provided to that client via a certificate extension or a configured TLS extension. 
     * Does the SCT-available status need to be stored in the session cache?  No, validation will occur on the initial handshake. 
 * The server will perform basic sanity checking on all SCTs at the earliest point practical if a check fails, since the administrator can diagnose a configuration problem much more easily when the server software identifies the issue. 
-* The server will represent the source(s) of SCT in SSL variable SSL_SCT_SOURCES; this will be a comma-delimited list of source types, with these types represented by “certext” (certificate extension), “tlsextfile” (TLS extension in ServerInfoFile), and “ocsp” (part of OCSP stapling response). 
+* The server will represent the source(s) of SCT in SSL variable SSL_SCT_SOURCES; this will be a comma-delimited list of source types, with these types represented by “certext” (certificate extension), “tlsextfile” (TLS extension in ServerInfoFile), and “ocsp” (part of OCSP stapling response).
+ * In the event that the client is *unaware*, SSL_SCT_SOURCES will be set to "none".
 
 ## Web server is configured in “opportunistic SCT” mode 
 
+* The processing described is for clients which request an SCT.  A client which is able to handle an SCT in **any** form **must** handle all forms, so a client that does not include the CertificateStatus extension is an *unaware* client.
 * The possible lack of one or more SCTs to provide to the client will not result in failures triggered by the server (though the client may refuse interoperation). 
 * If an SCT is available, the server will perform basic sanity checking on it and fail at the earliest point practical if a check fails. 
 * If an SCT is available, the server will represent the source(s) of SCT in SSL variable SSL_SCT_SOURCES as described previously.  Otherwise it will be set to “none”. 
+ * In the event that the client is *unaware*, SSL_SCT_SOURCES will be set to "none".
 
 ## Web server is configured in SCT-unaware mode 
 
