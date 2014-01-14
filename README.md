@@ -66,8 +66,6 @@ An SCT cannot be validated unless the public key of the log which generated it i
 
 When an SCT is provided during the handshake, the proxy can determine if the SCT provided is associated with the server certificate if the log which generated the SCT is trusted. 
 
-A separate OCSP request could potentially be used to query the OCSP server if an SCT is not otherwise provided, but this is not necessary due to the availability of sufficient mechanisms for delivering the SCT at the time of the handshake.  (The proxy could be configured to perform OCSP queries for other reasons.) 
-
 The CertificateStatus extension should always be included in the ClientHello when SCT processing is enabled; it may of course be enabled for other reasons. 
 
 Log auditing is an asynchronous operation, so the server certificate and SCT(s) must be stored, presumably without duplicates, for use by auditing. 
@@ -97,3 +95,7 @@ All SCT processing by the proxy is omitted.
 SSL_PROXY_SCT_SOURCES – “unknown” or unset
 
 SSL_PROXY_SCT_STATUS – “unknown” or unset 
+
+# Part III, random notes
+
+* The only manner in which a client will receive an SCT from an OCSP responder is via OCSP stapling; separate request flows are not needed for Certificate Transparency.
