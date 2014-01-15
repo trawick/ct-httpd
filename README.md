@@ -7,27 +7,35 @@ This describes possible implementations of Certificate Transparency in web and/o
 
 “Web server” in this document serves the role of “TLS server” while “proxy server” in this document serves the role as “TLS client.” 
 
-This document refers to the following additional applications used as part of administering the web/proxy server which are not necessarily part of the web or proxy server:
-
-1. log submission application
-  * The web/proxy server administrator uses this tool to submit a server certificate to a log and obtain an SCT in a suitable format.  This tool can maintain a set of SCTs in a suitable format as certificates are submitted to multiple logs. 
-2. Log auditing application
-  * A web proxy when communicating with untrusted TLS servers will queue data for auditing, to be processed off-line by the log auditing application.  The auditing application should expect to see duplicate input.
-  * Log auditing failures should be reflected in the set of logs known to the proxy server, though that may require manual intervention by the administrator. 
-
 Several "SSL variables" are referred to in the description.  Such variables are useful as information for web applications, for custom logging, and in some cases specific server processing can be triggered by specific values.  (These variables are often referred to as [environment variables](http://httpd.apache.org/docs/2.4/mod/mod_ssl.html#envvars), though in the case of mod_ssl they constitute a more general API.)
 
-# Part I, Web server 
+# Log submission
+
+Obtaining an SCT from a log is of course crucial for CT.  Mechanisms exist for the CA to handle this (inclusion of SCT in a certificate extension or OCSP stapling response) but obtaining an SCT is also a normal, server-based activity (*if* the CA didn't handle it, *when* it is appropriate to submit the server certificate to additional logs).
+
+Two models are described here -- a completely manual process handled by the server administrator, and an automated process implemented in the server software.  Either model can be used to ensure that the server sends SCTs from a set of logs which are trusted by clients, even after the occasional audit failure or decommissioning of a particular log.
+
+## Manual log submission
+
+The web/proxy server administrator uses a log submission application to submit a server certificate to a log and obtain an SCT in a suitable format.  This tool can maintain a set of SCTs in a suitable format as certificates are submitted to multiple logs.  Discovery of the failure of a log and potentially using an additional log requires manual intervention.
+
+## Automated log submission
+
+The server configuration includes a reference to a service (e.g., URL) which maintains a list of trusted logs.  (The details of this service are *TBD*.)  The server periodically checks the list of trusted logs, obtains SCTs as necessary from a configurable number of those logs, and includes them in the TLS extension when handshaking with *aware* clients.
+
+The automation avoids the need to configure those details in every server and allows dynamic updates when a trusted log fails.
+
+# Web server processing
 
 Supporting TLS communication from a client to a server (possibly upgraded after initial, unencrypted communication); the OCSP Stapling feature referred to below may be missing from some web server implementations or purposefully disabled 
 
 ## Web server is configured in “SCT-required” mode 
 
 * The processing described is for clients which request an SCT.  A client which is able to handle an SCT in **any** form **must** handle all forms, so a client that does not include the CertificateStatus extension is an *unaware* client.
-* The administrator may need to use the log submission tool to submit a server certificate and obtain an SCT. 
-  * This must be used if the SCT is not in a certificate extension and the SCT is not returned by the OCSP server. 
-  * This may be used to add responses from one or more additional logs that a client may require. 
-* The server software will ensure that at least one SCT is available in the certificate extension, or the SCT TLS extension is maintained separately (such as in a .pem file), or the SCT is part of the OCSP stapling response. 
+* The administrator will use the appropriate log submission mechanism (described above).
+  * This is absolutely required if the SCT is not in a certificate extension and the SCT is not returned by the OCSP server. 
+  * This should be used to add responses from one or more additional logs that a client may require. 
+* The server software will ensure that at least one SCT is available in the certificate extension, or the SCT TLS extension is available separately via the log submission mechanism, or the SCT is part of the OCSP stapling response. 
   * Processing should fail at the earliest point practical if this requirement is not met, which may be at the time of server startup or during the handshake. 
     * The server can check for the extension in the certificate or the TLS extension in foo.pem at startup. 
     * The earliest (practical) point that the OCSP stapling response may be examined will vary according to the server implementation. 
@@ -50,7 +58,7 @@ Supporting TLS communication from a client to a server (possibly upgraded after 
 * There is no requirement that an SCT will be delivered, but it is not specifically prevented. 
 * Any of the three mechanisms (certificate extension, TLS extension provided by the administrator as part of the server configuration, part of OCSP stapling response) can be used, but no sanity checks will be performed and SSL_SCT_SOURCES will be set to “unknown” or unset. 
 
-# Part II, proxy initiates TLS connections to back-end server 
+# Proxy processing
 
 Typical scenarios include 
 
@@ -72,6 +80,11 @@ The CertificateStatus extension should always be included in the ClientHello whe
 Log auditing is an asynchronous operation, so the server certificate and SCT(s) must be stored for use by auditing. As the same backend servers will likely be accessed frequently by the proxy, it may be necessary for the proxy to avoid storing duplicated information indiscriminately to control resource consumption though the auditing mechanism should handle duplications appropriately.
 
 SCT processing for trusted back-end servers (typical for reverse proxy) should be easy to disable, even in “SCT-required” mode.  Presumably if certificate validation is explicitly disabled for a back-end server then SCT processing would not be desired either. 
+
+## Log auditing application
+
+* A web proxy when communicating with untrusted TLS servers will queue data for auditing, to be processed off-line by the log auditing application.  The auditing application should expect to see duplicate input.
+* Log auditing failures should be reflected in the set of logs known to the proxy server, though that may require manual intervention by the administrator. 
 
 ## Proxy is configured in “SCT-required” mode 
 
@@ -97,6 +110,6 @@ SSL_PROXY_SCT_SOURCES – “unknown” or unset
 
 SSL_PROXY_SCT_STATUS – “unknown” or unset 
 
-# Part III, random notes
+# Miscellaneous notes
 
 * The only manner in which a client will receive an SCT from an OCSP responder is via OCSP stapling; separate request flows are not needed for Certificate Transparency.
