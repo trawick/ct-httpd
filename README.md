@@ -73,6 +73,13 @@ In the case of multiple SCTs provide in a handshake, a single valid SCT is suffi
 
 An SCT cannot be validated unless the public key of the log which generated it is available; thus, logs are expected to be statically configured to the proxy, possibly in a manner that can be updated dynamically when a log fails an audit. 
 
+From Ben Laurie:
+>Right - I think relying on server operators to keep configuration in 
+>line with reality is a bad idea - instead they should use some 
+>mechanism TBD to get the current list (note that this mechanism, 
+>unlike the one for servers, needs some kind of transparency of its 
+>own). 
+
 When an SCT is provided during the handshake, the proxy can determine if the SCT provided is associated with the server certificate if the log which generated the SCT is trusted. 
 
 The CertificateStatus extension should always be included in the ClientHello when SCT processing is enabled; it may of course be enabled for other reasons. 
