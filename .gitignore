@@ -1,0 +1,7 @@
+*.pyc
+*.la
+*.lo
+*.o
+*.slo
+.libs
+src/proto1/metrics.txt
