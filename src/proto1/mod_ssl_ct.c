@@ -101,6 +101,27 @@ static int ssl_ct_ssl_new_client(server_rec *s, conn_rec *c)
     return OK;
 }
 
+static void client_is_ct_aware(conn_rec *c)
+{
+    ct_conn_config *conncfg =
+      ap_get_module_config(c->conn_config, &ssl_ct_module);
+
+    if (!conncfg) {
+        conncfg = apr_pcalloc(c->pool, sizeof *conncfg);
+        ap_set_module_config(c->conn_config, &ssl_ct_module, conncfg);
+    }
+
+    conncfg->peer_ct_aware = 1;
+}
+
+static int is_client_ct_aware(conn_rec *c)
+{
+    ct_conn_config *conncfg =
+      ap_get_module_config(c->conn_config, &ssl_ct_module);
+
+    return conncfg && conncfg->peer_ct_aware;
+}
+
 static const uint16_t CT_EXTENSION_TYPE = 18;
 /* Callbacks and structures for handling custom TLS Extensions:
  *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
@@ -110,8 +131,9 @@ static int clientExtensionCallback1(SSL *ssl, unsigned short ext_type,
                                     const unsigned char **out,
                                     unsigned short *outlen, void *arg)
 {
-    ct_callback_info *cbi = arg;
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+
+    /* nothing to send in ClientHello */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "clientExtensionCallback1 called, "
@@ -125,8 +147,9 @@ static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
                                     const unsigned char *in, unsigned short inlen,
                                     int *al, void *arg)
 {
-    ct_callback_info *cbi = arg;
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+
+    /* need to retrieve SCT from ServerHello */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "clientExtensionCallback2 called, "
@@ -141,13 +164,17 @@ static int serverExtensionCallback1(SSL *ssl, unsigned short ext_type,
                                     unsigned short inlen, int *al,
                                     void *arg)
 {
-    ct_callback_info *cbi = arg;
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+
+    /* this callback tells us that client is CT-aware;
+     * there's nothing of interest in the extension data
+     */
+    client_is_ct_aware(c);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "serverExtensionCallback1 called, "
-                  "ext %hu was in ClientHello",
-                  ext_type);
+                  "ext %hu was in ClientHello (len %hu)",
+                  ext_type, inlen);
 
     return 1;
 }
@@ -156,17 +183,34 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
                                     const unsigned char **out,
                                     unsigned short *outlen, void *arg)
 {
-    ct_callback_info *cbi = arg;
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+
+    if (!is_client_ct_aware(c)) {
+        /* Hmmm...  Is this actually called if the client doesn't include
+         * the extension in the ClientHello?  I don't think so.
+         */
+        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                      "serverExtensionCallback2: client isn't CT-aware");
+        /* Skip this extension for ServerHello */
+        return -1;
+    }
+
+    /* need to reply with SCT */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "serverExtensionCallback2 called, "
                   "ext %hu will be in ServerHello",
                   ext_type);
 
+#if 0 /* need to get the real SCT(s) */
+    *out = (const unsigned char *)"GARBAGE";
+    *outlen = 8;
+#endif
+
     return 1;
 }
 
+#if 0
 static void tlsext_cb(SSL *ssl, int client_server, int type,
                       unsigned char *data, int len,
                       void *arg)
@@ -182,17 +226,18 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
     if (type == CT_EXTENSION_TYPE) {
         ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "Got CT extension");
 
-        conncfg = apr_pcalloc(c->pool, sizeof *conncfg);
-        conncfg->peer_ct_aware = 1;
-        ap_set_module_config(c->conn_config, &ssl_ct_module, conncfg);
+        client_is_ct_aware(c);
     }
 }
+#endif
 
 static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected (pre-handshake)");
+#if 0
     SSL_set_tlsext_debug_callback(ssl, tlsext_cb);
     SSL_set_tlsext_debug_arg(ssl, c);
+#endif
 
     return OK;
 }
