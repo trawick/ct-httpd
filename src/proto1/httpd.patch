@@ -1,0 +1,130 @@
+Index: modules/ssl/mod_ssl.c
+===================================================================
+--- modules/ssl/mod_ssl.c	(revision 1564310)
++++ modules/ssl/mod_ssl.c	(working copy)
+@@ -37,6 +37,9 @@
+ int ssl_running_on_valgrind = 0;
+ #endif
+ 
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_new_client_pre,(server_rec *s,conn_rec *c,modssl_ctx_t *mctx,SSL *ssl),
++                                   (s,c,mctx,ssl),OK,DECLINED);
++
+ /*
+  *  the table of configuration directives we provide
+  */
+@@ -498,6 +501,8 @@
+         return DECLINED; /* XXX */
+     }
+ 
++    ap_run_ssl_new_client_pre(server, c, mctx, ssl);
++
+     vhost_md5 = ap_md5_binary(c->pool, (unsigned char *)sc->vhost_id,
+                               sc->vhost_id_len);
+ 
+Index: modules/ssl/ssl_engine_init.c
+===================================================================
+--- modules/ssl/ssl_engine_init.c	(revision 1564310)
++++ modules/ssl/ssl_engine_init.c	(working copy)
+@@ -29,6 +29,11 @@
+ #include "ssl_private.h"
+ #include "mpm_common.h"
+ 
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_server_init,(server_rec *s,SSLSrvConfigRec *sc),
++                                   (s,sc),OK,DECLINED)
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,apr_pool_t *ptemp,modssl_ctx_t *mctx),
++                                   (s,p,ptemp,mctx),OK,DECLINED);
++
+ /*  _________________________________________________________________
+ **
+ **  Module Initialization
+@@ -248,6 +253,18 @@
+         return rv;
+     }
+ 
++    for (s = base_server; s; s = s->next) {
++        sc = mySrvConfig(s);
++
++        if (sc->enabled == SSL_ENABLED_TRUE) {
++            if ((rv = ap_run_ssl_server_init(s, sc)) != APR_SUCCESS) {
++                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, APLOGNO()
++                             "Init: ssl_server_init failed");
++                return rv;
++            }
++        }
++    }
++
+     /*
+      *  Announce mod_ssl and SSL library in HTTP Server field
+      *  as ``mod_ssl/X.X.X OpenSSL/X.X.X''
+@@ -815,6 +832,10 @@
+ #endif
+     }
+ 
++    if ((rv = ap_run_ssl_init_ctx(s, p, ptemp, mctx)) != APR_SUCCESS) {
++        return rv;
++    }
++
+     return APR_SUCCESS;
+ }
+ 
+Index: modules/ssl/ssl_engine_io.c
+===================================================================
+--- modules/ssl/ssl_engine_io.c	(revision 1564310)
++++ modules/ssl/ssl_engine_io.c	(working copy)
+@@ -31,6 +31,9 @@
+ #include "mod_ssl.h"
+ #include "apr_date.h"
+ 
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_new_client,(server_rec *s,conn_rec *c,SSLSrvConfigRec *sc),
++                                   (s,c,sc),OK,DECLINED)
++
+ /*  _________________________________________________________________
+ **
+ **  I/O Hooks
+@@ -1104,6 +1107,7 @@
+     X509 *cert;
+     int n;
+     int ssl_err;
++    int rc;
+     long verify_result;
+     server_rec *server;
+ 
+@@ -1350,6 +1354,12 @@
+         return APR_ECONNABORTED;
+     }
+ 
++    if ((rc = ap_run_ssl_new_client(server, c, sc)) != OK && rc != DECLINED) {
++        ap_log_cerror(APLOG_MARK, APLOG_ERR, rc, c,
++                      "ssl_new_client failed");
++        return rc;
++    }
++
+     return APR_SUCCESS;
+ }
+ 
+Index: modules/ssl/ssl_private.h
+===================================================================
+--- modules/ssl/ssl_private.h	(revision 1564310)
++++ modules/ssl/ssl_private.h	(working copy)
+@@ -185,7 +185,9 @@
+ /* mod_ssl headers */
+ #include "ssl_util_ssl.h"
+ 
++#ifndef MOD_SSL_EXTENSION
+ APLOG_USE_MODULE(ssl);
++#endif
+ 
+ /*
+  * Provide reasonable default for some defines
+@@ -932,6 +934,11 @@
+ extern int ssl_running_on_valgrind;
+ #endif
+ 
++AP_DECLARE_HOOK(int,ssl_server_init,(server_rec *,SSLSrvConfigRec *))
++AP_DECLARE_HOOK(int,ssl_new_client,(server_rec *,conn_rec *c,SSLSrvConfigRec *))
++AP_DECLARE_HOOK(int,ssl_new_client_pre,(server_rec *,conn_rec *,modssl_ctx_t *mctx, SSL *ssl))
++AP_DECLARE_HOOK(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,apr_pool_t *ptemp,modssl_ctx_t *mctx))
++
+ #endif /* SSL_PRIVATE_H */
+ /** @} */
+ 
