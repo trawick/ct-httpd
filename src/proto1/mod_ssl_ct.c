@@ -34,6 +34,12 @@ typedef struct ct_conn_config {
     int peer_ct_aware;
 } ct_conn_config;
 
+typedef struct ct_callback_info {
+    server_rec *s;
+    conn_rec *c;
+    ct_conn_config *conncfg;
+} ct_callback_info;
+
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
 /* can't apr_proc_create() on request handling thread with threaded MPM
@@ -100,25 +106,63 @@ static const uint16_t CT_EXTENSION_TYPE = 18;
  *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
  *   cli_ext_second_cb - receives data from ServerHello TLS Extension
  */
-static int extensionCallback1(SSL *ssl, unsigned short ext_type,
-                              const unsigned char **out,
-                              unsigned short *outlen, void *arg) {
-    server_rec *s = arg;
+static int clientExtensionCallback1(SSL *ssl, unsigned short ext_type,
+                                    const unsigned char **out,
+                                    unsigned short *outlen, void *arg)
+{
+    ct_callback_info *cbi = arg;
+    conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
 
-    ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, "extensionCallback1 called (%hu)",
-                 ext_type);
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "clientExtensionCallback1 called, "
+                  "ext %hu will be in ClientHello",
+                  ext_type);
 
     return 1;
 }
 
-/* like the one in certificate-transparency/src/client/ssl_client.cc */
-static int extensionCallback2(SSL *ssl, unsigned short ext_type,
-                              const unsigned char *in, unsigned short inlen,
-                              int *al, void *arg) {
-    server_rec *s = arg;
+static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
+                                    const unsigned char *in, unsigned short inlen,
+                                    int *al, void *arg)
+{
+    ct_callback_info *cbi = arg;
+    conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
 
-    ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, "extensionCallback2 called (%hu)",
-                 ext_type);
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "clientExtensionCallback2 called, "
+                  "ext %hu was in ServerHello",
+                  ext_type);
+
+    return 1;
+}
+
+static int serverExtensionCallback1(SSL *ssl, unsigned short ext_type,
+                                    const unsigned char *in,
+                                    unsigned short inlen, int *al,
+                                    void *arg)
+{
+    ct_callback_info *cbi = arg;
+    conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "serverExtensionCallback1 called, "
+                  "ext %hu was in ClientHello",
+                  ext_type);
+
+    return 1;
+}
+
+static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
+                                    const unsigned char **out,
+                                    unsigned short *outlen, void *arg)
+{
+    ct_callback_info *cbi = arg;
+    conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "serverExtensionCallback2 called, "
+                  "ext %hu will be in ServerHello",
+                  ext_type);
 
     return 1;
 }
@@ -150,32 +194,47 @@ static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, SSL *ssl)
     SSL_set_tlsext_debug_callback(ssl, tlsext_cb);
     SSL_set_tlsext_debug_arg(ssl, c);
 
-#if 0
-    if (!SSL_CTX_set_custom_cli_ext(ctx, CT_EXTENSION_TYPE, NULL, extensionCallback,
-                                    s)) {
-        ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
-                     "Unable to initalize Certificate Transparency extension callback from new_client_pre");
-    }
-#endif
     return OK;
 }
 
 static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, int is_proxy, SSL_CTX *ssl_ctx)
 {
+    ct_callback_info *cbi = apr_pcalloc(p, sizeof *cbi);
+
+    cbi->s = s;
+
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "ssl_init_ctx; proxy? %s",
                  is_proxy ? "yes" : "no");
 
     if (is_proxy) {
-        /* _cli_ = "client" extension
+        /* _cli_ = "client"
          *
          * Even though the callbacks don't do anything, this is sufficient to
          * include the CT extension in the ClientHello
          */
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "setting extension callback");
-        if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE, extensionCallback1, extensionCallback2,
-                                        s)) {
+        if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE,
+                                        clientExtensionCallback1,
+                                        clientExtensionCallback2, cbi)) {
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
-                         "Unable to initalize Certificate Transparency extension callback");
+                         "Unable to initalize Certificate Transparency client "
+                         "extension callbacks (callback for %d already registered?)",
+                         CT_EXTENSION_TYPE);
+            return HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+    else {
+        /* _srv_ = "server"
+         *
+         * Even though the callbacks don't do anything, this is sufficient to
+         * include the CT extension in the ServerHello
+         */
+        if (!SSL_CTX_set_custom_srv_ext(ssl_ctx, CT_EXTENSION_TYPE,
+                                        serverExtensionCallback1,
+                                        serverExtensionCallback2, cbi)) {
+            ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
+                         "Unable to initalize Certificate Transparency server "
+                         "extension callback (callbacks for %d already registered?)",
+                         CT_EXTENSION_TYPE);
             return HTTP_INTERNAL_SERVER_ERROR;
         }
     }
