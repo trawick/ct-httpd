@@ -175,7 +175,11 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
                  is_proxy ? "yes" : "no");
 
     if (is_proxy) {
-        /* _cli_ = "client" extension */
+        /* _cli_ = "client" extension
+         *
+         * Even though the callbacks don't do anything, this is sufficient to
+         * include the CT extension in the ClientHello
+         */
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "setting extension callback");
         if (!SSL_CTX_set_custom_cli_ext(mctx->ssl_ctx, CT_EXTENSION_TYPE, extensionCallback1, extensionCallback2,
                                         s)) {
