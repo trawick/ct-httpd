@@ -24,6 +24,8 @@
 #define MOD_SSL_EXTENSION
 #include "ssl_private.h"
 
+#define STATUS_VAR "SSL_CT_PEER_STATUS"
+
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
 } ct_server_config;
@@ -199,10 +201,10 @@ static int ssl_ct_post_read_request(request_rec *r)
       ap_get_module_config(r->connection->conn_config, &ssl_ct_module);
 
     if (conncfg && conncfg->peer_ct_aware) {
-        apr_table_set(r->subprocess_env, "SSL_SCT_PEER", "peer-aware");
+        apr_table_set(r->subprocess_env, STATUS_VAR, "peer-aware");
     }
     else {
-        apr_table_set(r->subprocess_env, "SSL_SCT_PEER", "peer-unaware");
+        apr_table_set(r->subprocess_env, STATUS_VAR, "peer-unaware");
     }
 
     return DECLINED;
