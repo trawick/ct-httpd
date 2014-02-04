@@ -14,5 +14,8 @@ Development Stages for CT in httpd
 
 ## Implementation shortcuts
 
-* Add any necessary hooks to mod_ssl to minimize collision with other active development, and implement new program logic in mod_ssl_ct.
-* mod_ssl_ct will use certificate-transparency project **executable files** (if at all possible) to communicate with the log(s), avoiding what looks like a build nightmare.
+* Add any necessary hooks to mod\_ssl to minimize collision with other
+active development, and implement new program logic in mod\_ssl\_ct.
+* mod\_ssl\_ct will use certificate-transparency project **executable
+files** (if at all possible) to communicate with the log(s), avoiding
+what looks like a build nightmare.
