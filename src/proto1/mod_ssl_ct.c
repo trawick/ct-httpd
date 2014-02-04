@@ -28,6 +28,7 @@
 
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
+    apr_array_header_t *cert_files;
 } ct_server_config;
 
 typedef struct ct_conn_config {
@@ -41,6 +42,28 @@ typedef struct ct_callback_info {
 } ct_callback_info;
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
+
+#define FINGERPRINT_SIZE 60
+
+static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
+{
+    const EVP_MD *digest;
+    unsigned char md[EVP_MAX_MD_SIZE];
+    int i;
+    unsigned int n;
+    digest = EVP_get_digestbyname("sha1");
+    X509_digest(x, digest, md, &n);
+
+    ap_assert(n == 20);
+    ap_assert(fpsize >= FINGERPRINT_SIZE);
+
+    i = 0;
+    while (i < n - 1) {
+        apr_snprintf(fingerprint + i * 3, 4, "%02X:", md[i]);
+        i++;
+    }
+    apr_snprintf(fingerprint + i * 3, 3, "%02X", md[i]);
+}
 
 /* can't apr_proc_create() on request handling thread with threaded MPM
  * on Unix
@@ -71,6 +94,41 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
     return OK;
 }
 
+static void readLeafCertificate(server_rec *s,
+                                const char *fn, apr_pool_t *p,
+                                const char **leafCert, apr_size_t *leafCertSize)
+{
+    /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
+    apr_file_t *f;
+    apr_status_t rv;
+    char *buf;
+    apr_size_t nbytes, bytes_read;
+
+    *leafCert = NULL;
+    *leafCertSize = 0;
+    rv = apr_file_open(&f, fn, APR_READ | APR_BINARY, APR_FPROT_OS_DEFAULT, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "couldn't read %s", fn);
+        return;
+    }
+
+    if (rv == APR_SUCCESS) {
+        nbytes = 50000;
+        buf = apr_palloc(p, nbytes);
+        rv = apr_file_read_full(f, buf, nbytes, &bytes_read);
+        if (rv == APR_EOF) {
+            *leafCert = buf;
+            *leafCertSize = bytes_read;
+        }
+        else {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "apr_file_read_full");
+        }
+        apr_file_close(f);
+    }
+}
+
 static void log_array(const char *file, int line, int module_index,
                       int level, server_rec *s, const char *desc,
                       apr_array_header_t *arr)
@@ -88,9 +146,43 @@ static void log_array(const char *file, int line, int module_index,
 
 static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_t *cert_files)
 {
+    int i;
+    const char **elts;
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
+#if 0
     X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
+#endif
 
-    log_array(APLOG_MARK, APLOG_ERR, s, "Certificate files:", cert_files);
+    log_array(APLOG_MARK, APLOG_INFO, s, "Certificate files:", cert_files);
+    sconf->cert_files = cert_files;
+
+    elts = (const char **)sconf->cert_files->elts;
+    for (i = 0; i < sconf->cert_files->nelts; i++) {
+        /* Get fingerprint of certificate for association with SCTs. */
+        const char *fn = elts[i];
+        char fingerprint[FINGERPRINT_SIZE];
+        BIO *bio;
+        X509 *x;
+        const char *leafCert;
+        apr_size_t leafCertSize;
+
+        readLeafCertificate(s, fn, s->process->pool, &leafCert, &leafCertSize);
+
+        if (leafCert) {
+            bio = BIO_new_mem_buf((void *)leafCert, leafCertSize);
+            x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
+            ap_assert(x);
+            get_fingerprint(x, fingerprint, sizeof fingerprint);
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "fingerprint for %s: %s",
+                         fn, fingerprint);
+        }
+        else {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                         "leaf certificate couldn't be read from %s", fn);
+        }        
+    }
 
     return OK;
 }
@@ -155,6 +247,8 @@ static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
                   "clientExtensionCallback2 called, "
                   "ext %hu was in ServerHello",
                   ext_type);
+    ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT from ServerHello",
+                 in, inlen, AP_LOG_DATA_SHOW_OFFSET);
 
     return 1;
 }
@@ -184,6 +278,8 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
                                     unsigned short *outlen, void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+    X509 *x;
+    char fingerprint[FINGERPRINT_SIZE];
 
     if (!is_client_ct_aware(c)) {
         /* Hmmm...  Is this actually called if the client doesn't include
@@ -197,26 +293,29 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
 
     /* need to reply with SCT */
 
+    x = SSL_get_certificate(ssl);
+    get_fingerprint(x, fingerprint, sizeof fingerprint);
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "certificate fingerprint: %s", fingerprint);
+
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "serverExtensionCallback2 called, "
                   "ext %hu will be in ServerHello",
                   ext_type);
 
-#if 0 /* need to get the real SCT(s) */
+    /* need to get the real SCT(s) */
     *out = (const unsigned char *)"GARBAGE";
     *outlen = 8;
-#endif
 
     return 1;
 }
 
-#if 0
 static void tlsext_cb(SSL *ssl, int client_server, int type,
                       unsigned char *data, int len,
                       void *arg)
 {
     conn_rec *c = arg;
-    ct_conn_config *conncfg;
 
 #if 0
     ap_log_cerror(APLOG_MARK, APLOG_TRACE8, 0, c, "tlsext_cb called (%d,%d,%d)",
@@ -229,15 +328,17 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
         client_is_ct_aware(c);
     }
 }
-#endif
 
 static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected (pre-handshake)");
-#if 0
+
+    /* This callback is needed only to determine that the peer is CT-aware
+     * when resuming a session.  For an initial handshake, the callbacks
+     * registered via SSL_CTX_set_custom_srv_ext() are sufficient.
+     */
     SSL_set_tlsext_debug_callback(ssl, tlsext_cb);
     SSL_set_tlsext_debug_arg(ssl, c);
-#endif
 
     return OK;
 }
