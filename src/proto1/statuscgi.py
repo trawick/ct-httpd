@@ -9,7 +9,7 @@ print
 # cgi.print_environ()
 
 t = '<table border="1">\n'
-for v in ['HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT', 'SSL_SCT_PEER', 'SSL_PROTOCOL',
+for v in ['HTTPS', 'REMOTE_ADDR', 'REMOTE_PORT', 'SSL_CT_PEER_STATUS', 'SSL_PROTOCOL',
           'SSL_SESSION_RESUMED']:
     t += '''<tr>
   <td>%s</td><td>%s</td>

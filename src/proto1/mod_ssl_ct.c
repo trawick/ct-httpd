@@ -21,11 +21,16 @@
 #include "http_log.h"
 #include "ap_mpm.h"
 
+#define MOD_SSL_EXTENSION
 #include "ssl_private.h"
 
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
 } ct_server_config;
+
+typedef struct ct_conn_config {
+    int peer_ct_aware;
+} ct_conn_config;
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
@@ -89,6 +94,120 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSLSrvConfigRec *sc)
     return OK;
 }
 
+static int ssl_ct_ssl_new_client(server_rec *s, conn_rec *c, SSLSrvConfigRec *sc)
+{
+    ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected");
+    return OK;
+}
+
+static const uint16_t CT_EXTENSION_TYPE = 18;
+/* Callbacks and structures for handling custom TLS Extensions:
+ *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
+ *   cli_ext_second_cb - receives data from ServerHello TLS Extension
+ */
+static int extensionCallback1(SSL *ssl, unsigned short ext_type,
+                              const unsigned char **out,
+                              unsigned short *outlen, void *arg) {
+    server_rec *s = arg;
+
+    ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, "extensionCallback1 called (%hu)",
+                 ext_type);
+
+    return 1;
+}
+
+/* like the one in certificate-transparency/src/client/ssl_client.cc */
+static int extensionCallback2(SSL *ssl, unsigned short ext_type,
+                              const unsigned char *in, unsigned short inlen,
+                              int *al, void *arg) {
+    server_rec *s = arg;
+
+    ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, "extensionCallback2 called (%hu)",
+                 ext_type);
+
+    return 1;
+}
+
+static void tlsext_cb(SSL *ssl, int client_server, int type,
+                      unsigned char *data, int len,
+                      void *arg)
+{
+    conn_rec *c = arg;
+    ct_conn_config *conncfg;
+
+#if 0
+    ap_log_cerror(APLOG_MARK, APLOG_TRACE8, 0, c, "tlsext_cb called (%d,%d,%d)",
+                  client_server, type, len);
+#endif
+
+    if (type == CT_EXTENSION_TYPE) {
+        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "Got CT extension");
+
+        conncfg = apr_pcalloc(c->pool, sizeof *conncfg);
+        conncfg->peer_ct_aware = 1;
+        ap_set_module_config(c->conn_config, &ssl_ct_module, conncfg);
+    }
+}
+
+static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, modssl_ctx_t *mctx, SSL *ssl)
+{
+    ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected (pre-handshake)");
+    SSL_set_tlsext_debug_callback(ssl, tlsext_cb);
+    SSL_set_tlsext_debug_arg(ssl, c);
+
+#if 0
+    if (!SSL_CTX_set_custom_cli_ext(ctx, CT_EXTENSION_TYPE, NULL, extensionCallback,
+                                    s)) {
+        ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
+                     "Unable to initalize Certificate Transparency extension callback from new_client_pre");
+    }
+#endif
+    return OK;
+}
+
+static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, modssl_ctx_t *mctx)
+{
+    int is_proxy = mctx->sc && mctx->sc->proxy_enabled;
+
+    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "ssl_init_ctx; proxy? %s",
+                 is_proxy ? "yes" : "no");
+
+    if (is_proxy) {
+        /* _cli_ = "client" extension */
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "setting extension callback");
+        if (!SSL_CTX_set_custom_cli_ext(mctx->ssl_ctx, CT_EXTENSION_TYPE, extensionCallback1, extensionCallback2,
+                                        s)) {
+            ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
+                         "Unable to initalize Certificate Transparency extension callback");
+            return HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    return OK;
+}
+
+static int ssl_ct_ssl_ext_callback(server_rec *s, SSLSrvConfigRec *sc)
+{
+    /* see ssl_client.cc for real code */
+    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "ssl_ct_ssl_ext_callback");
+    return OK;
+}
+
+static int ssl_ct_post_read_request(request_rec *r)
+{
+    ct_conn_config *conncfg =
+      ap_get_module_config(r->connection->conn_config, &ssl_ct_module);
+
+    if (conncfg && conncfg->peer_ct_aware) {
+        apr_table_set(r->subprocess_env, "SSL_SCT_PEER", "peer-aware");
+    }
+    else {
+        apr_table_set(r->subprocess_env, "SSL_SCT_PEER", "peer-unaware");
+    }
+
+    return DECLINED;
+}
+
 static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
 {
     ct_server_config *conf =
@@ -115,7 +234,14 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 static void ct_register_hooks(apr_pool_t *p)
 {
     ap_hook_check_config(ssl_ct_check_config, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
+                     APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(ssl_new_client, ssl_ct_ssl_new_client, NULL, NULL,
+                     APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
+                     APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(ssl_new_client_pre, ssl_ct_ssl_new_client_pre, NULL, NULL,
                      APR_HOOK_MIDDLE);
 }
 
@@ -179,7 +305,7 @@ static const command_rec ct_cmds[] =
     {NULL}
 };
 
-module AP_MODULE_DECLARE_DATA ssl_ct_module =
+AP_DECLARE_MODULE(ssl_ct) =
 {
     STANDARD20_MODULE_STUFF,
     NULL,
