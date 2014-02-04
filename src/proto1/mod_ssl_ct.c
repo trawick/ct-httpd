@@ -19,10 +19,10 @@
 #include "httpd.h"
 #include "http_config.h"
 #include "http_log.h"
+#include "http_protocol.h"
 #include "ap_mpm.h"
 
-#define MOD_SSL_EXTENSION
-#include "ssl_private.h"
+#include "ssl_hooks.h"
 
 #define STATUS_VAR "SSL_CT_PEER_STATUS"
 
@@ -80,23 +80,16 @@ static void log_array(const char *file, int line, int module_index,
     }
 }
 
-static int ssl_ct_ssl_server_init(server_rec *s, SSLSrvConfigRec *sc)
+static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_t *cert_files)
 {
-    if (sc->server->pks) {
-        SSL_CTX *ctx = sc->server->ssl_ctx;
+    X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
 
-        X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
-
-        apr_array_header_t *cert_files = sc->server->pks->cert_files;
-
-        log_array(APLOG_MARK, APLOG_ERR, s, "Certificate files:", cert_files);
-
-    }
+    log_array(APLOG_MARK, APLOG_ERR, s, "Certificate files:", cert_files);
 
     return OK;
 }
 
-static int ssl_ct_ssl_new_client(server_rec *s, conn_rec *c, SSLSrvConfigRec *sc)
+static int ssl_ct_ssl_new_client(server_rec *s, conn_rec *c)
 {
     ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected");
     return OK;
@@ -151,7 +144,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
     }
 }
 
-static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, modssl_ctx_t *mctx, SSL *ssl)
+static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected (pre-handshake)");
     SSL_set_tlsext_debug_callback(ssl, tlsext_cb);
@@ -167,10 +160,8 @@ static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, modssl_ctx_t *m
     return OK;
 }
 
-static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, modssl_ctx_t *mctx)
+static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, int is_proxy, SSL_CTX *ssl_ctx)
 {
-    int is_proxy = mctx->sc && mctx->sc->proxy_enabled;
-
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "ssl_init_ctx; proxy? %s",
                  is_proxy ? "yes" : "no");
 
@@ -181,7 +172,7 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
          * include the CT extension in the ClientHello
          */
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "setting extension callback");
-        if (!SSL_CTX_set_custom_cli_ext(mctx->ssl_ctx, CT_EXTENSION_TYPE, extensionCallback1, extensionCallback2,
+        if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE, extensionCallback1, extensionCallback2,
                                         s)) {
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
                          "Unable to initalize Certificate Transparency extension callback");
@@ -189,13 +180,6 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
         }
     }
 
-    return OK;
-}
-
-static int ssl_ct_ssl_ext_callback(server_rec *s, SSLSrvConfigRec *sc)
-{
-    /* see ssl_client.cc for real code */
-    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "ssl_ct_ssl_ext_callback");
     return OK;
 }
 
