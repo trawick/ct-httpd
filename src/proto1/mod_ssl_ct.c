@@ -40,6 +40,8 @@
 
 #include "ssl_hooks.h"
 
+#define SCT_BASE_DIR "/tmp/scts"
+
 #define STATUS_VAR "SSL_CT_PEER_STATUS"
 
 typedef struct ct_server_config {
@@ -83,24 +85,14 @@ static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
     apr_snprintf(fingerprint + i * 3, 3, "%02X", md[i]);
 }
 
-/* can't apr_proc_create() on request handling thread with threaded MPM
- * on Unix
- */
-static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
-                               apr_pool_t *ptemp, server_rec *s)
-{
-    sct_hash = apr_hash_make(pconf);
-
-    return OK;
-}
-
 /* As of httpd 2.5, this should only read the FIRST certificate
  * in the file.  NOT IMPLEMENTED (assumes that the leaf certificate
  * is the ONLY certificate)
  */
-static void readLeafCertificate(server_rec *s,
-                                const char *fn, apr_pool_t *p,
-                                const char **leafCert, apr_size_t *leafCertSize)
+static apr_status_t readLeafCertificate(server_rec *s,
+                                        const char *fn, apr_pool_t *p,
+                                        const char **leafCert, 
+                                        apr_size_t *leafCertSize)
 {
     /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
     apr_file_t *f;
@@ -114,16 +106,19 @@ static void readLeafCertificate(server_rec *s,
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                      "couldn't read %s", fn);
-        return;
     }
 
     if (rv == APR_SUCCESS) {
+        /* XXX Stupid, but accessing all the server certificates needs to
+         * be changed anyway to deal with SSLOpenSSLConfCmd
+         */
         nbytes = 50000;
         buf = apr_palloc(p, nbytes);
         rv = apr_file_read_full(f, buf, nbytes, &bytes_read);
         if (rv == APR_EOF) {
             *leafCert = buf;
             *leafCertSize = bytes_read;
+            rv = APR_SUCCESS;
         }
         else {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -131,6 +126,182 @@ static void readLeafCertificate(server_rec *s,
         }
         apr_file_close(f);
     }
+
+    return rv;
+}
+
+static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
+                                                   const char *certFile,
+                                                   char *fingerprint,
+                                                   size_t fingerprint_size)
+{
+    apr_status_t rv;
+    BIO *bio;
+    X509 *x;
+    const char *leafCert;
+    apr_size_t leafCertSize;
+
+    rv = readLeafCertificate(s_main, certFile, s_main->process->pool,
+                             &leafCert, &leafCertSize);
+
+    if (rv == APR_SUCCESS) {
+        bio = BIO_new_mem_buf((void *)leafCert, leafCertSize);
+        ap_assert(bio);
+        x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
+        ap_assert(x);
+        get_fingerprint(x, fingerprint, fingerprint_size);
+    }
+
+    return rv;
+}
+
+static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
+                               apr_pool_t *ptemp, server_rec *s)
+{
+    sct_hash = apr_hash_make(pconf);
+
+    return OK;
+}
+
+static apr_status_t get_sct(server_rec *s_main, const char *certFile, 
+                            const char *logURL, const char *sct_dir)
+{
+    apr_pool_t *p = s_main->process->pool;
+    apr_status_t rv;
+    char fingerprint[FINGERPRINT_SIZE];
+    char *sct_fn;
+    const char *submit_cmd;
+    apr_finfo_t finfo;
+
+    rv = get_cert_fingerprint_from_file(s_main, certFile, fingerprint,
+                                        sizeof fingerprint);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "failed to get certificate fingerprint from %s",
+                     certFile);
+        return rv;
+    }
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                 "fingerprint for %s is %s",
+                 certFile, fingerprint);
+
+    rv = apr_filepath_merge(&sct_fn, sct_dir, fingerprint, 0, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "failed to construct path to SCT for %s", certFile);
+        return rv;
+    }
+
+    rv = apr_stat(&finfo, sct_fn, APR_FINFO_MIN, p);
+    if (rv == APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                     "Found SCT for %s in %s",
+                     certFile, sct_fn);
+        return rv;
+    }
+
+    ap_log_error(APLOG_MARK, APLOG_INFO, rv, s_main,
+                 "Did not find SCT for %s in %s, must fetch",
+                 certFile, sct_fn);
+
+    submit_cmd = apr_psprintf(p, "/home/trawick/git/certificate-transparency/src/client/ct --ct_server=localhost:8888 --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
+                              certFile, sct_fn);
+
+    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                 "Running >%s<", submit_cmd);
+                              
+    rv = system(submit_cmd);
+
+    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                 "->%d", rv);
+
+    return rv;
+}
+
+static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
+                              apr_pool_t *ptemp, server_rec *s_main)
+{
+    /* Ensure that we already have, or can fetch, the SCT for each certificate.  
+     * If so, start the daemon to maintain these and let startup continue.
+     * (Otherwise abort startup.)
+     */
+
+    server_rec *s;
+
+    s = s_main;
+    while (s) {
+        ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                       &ssl_ct_module);
+        int i, j;
+        apr_status_t rv;
+        const char **cert_elts, **log_elts;
+
+        if (sconf && sconf->cert_files) {
+
+            cert_elts = (const char **)sconf->cert_files->elts;
+            log_elts  = (const char **)sconf->log_urls->elts;
+            for (i = 0; i < sconf->cert_files->nelts; i++) {
+                for (j = 0; j < sconf->log_urls->nelts; j++) {
+                    rv = get_sct(s_main, cert_elts[i], log_elts[j], SCT_BASE_DIR);
+                    if (rv != APR_SUCCESS) {
+                        return HTTP_INTERNAL_SERVER_ERROR;
+                    }
+                }
+            }
+
+        }
+
+        s = s->next;
+    }
+
+    return OK;
+}
+
+static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
+                              const char *sct_dir,
+                              server_rec *s,
+                              char **scts, apr_size_t *scts_len)
+{
+    apr_file_t *f;
+    apr_size_t nbytes;
+    apr_status_t rv;
+    char *sct_fn;
+
+    rv = apr_filepath_merge(&sct_fn, sct_dir, fingerprint, 0, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK,
+                     /* this worked at init! */
+                     APLOG_CRIT,
+                     rv, s,
+                     "failed to construct path to SCT for cert with fingerprint %s",
+                     fingerprint);
+        return rv;
+    }
+
+    rv = apr_file_open(&f, sct_fn, APR_READ | APR_BINARY, APR_FPROT_OS_DEFAULT, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "couldn't find SCT in %s! (it was there at init)",
+                     sct_fn);
+        return rv;
+    }
+
+    /* For now the single file has what we want as-is. */
+    nbytes = 50000;
+    *scts = apr_palloc(p, nbytes);
+    rv = apr_file_read_full(f, *scts, nbytes, scts_len);
+    if (rv == APR_EOF) { /* GOOD! */
+        rv = APR_SUCCESS;
+    }
+    else {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "failed to read %s", sct_fn);
+    }
+
+    apr_file_close(f);
+    
+    return rv;
 }
 
 static void log_array(const char *file, int line, int module_index,
@@ -287,7 +458,9 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     X509 *x;
     char fingerprint[FINGERPRINT_SIZE];
-    const unsigned char *sct;
+    const unsigned char *scts;
+    apr_size_t scts_len;
+    apr_status_t rv;
 
     if (!is_client_ct_aware(c)) {
         /* Hmmm...  Is this actually called if the client doesn't include
@@ -312,16 +485,18 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
                   "ext %hu will be in ServerHello",
                   ext_type);
 
-    /* need to get the real SCT(s) */
-    sct = (const unsigned char *)apr_hash_get(sct_hash, fingerprint,
-                                              APR_HASH_KEY_STRING);
-    if (sct) {
-        *out = sct;
+    rv = read_scts(c->pool, fingerprint,
+                   SCT_BASE_DIR,
+                   c->base_server, (char **)&scts, &scts_len);
+    if (rv == APR_SUCCESS) {
+        *out = scts;
+        *outlen = scts_len;
     }
     else {
+        /* XXX Do not return the extension if we have no SCT! */
         *out = (const unsigned char *)"NO SCT!";
+        *outlen = (unsigned short)(strlen((const char *)*out) + 1);
     }
-    *outlen = (unsigned short)(strlen((const char *)*out) + 1);
 
     return 1;
 }
@@ -333,6 +508,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
     conn_rec *c = arg;
 
 #if 0
+    /* so noisy, even for TRACE8 */
     ap_log_cerror(APLOG_MARK, APLOG_TRACE8, 0, c, "tlsext_cb called (%d,%d,%d)",
                   client_server, type, len);
 #endif
@@ -444,6 +620,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 static void ct_register_hooks(apr_pool_t *p)
 {
     ap_hook_check_config(ssl_ct_check_config, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
                      APR_HOOK_MIDDLE);
