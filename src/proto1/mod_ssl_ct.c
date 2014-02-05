@@ -365,12 +365,6 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
     return OK;
 }
 
-static int ssl_ct_ssl_new_client(server_rec *s, conn_rec *c)
-{
-    ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected");
-    return OK;
-}
-
 static void client_is_ct_aware(conn_rec *c)
 {
     ct_conn_config *conncfg =
@@ -520,7 +514,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
     }
 }
 
-static int ssl_ct_ssl_new_client_pre(server_rec *s, conn_rec *c, SSL *ssl)
+static int ssl_ct_ssl_new_client_pre_handshake(server_rec *s, conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected (pre-handshake)");
 
@@ -624,12 +618,11 @@ static void ct_register_hooks(apr_pool_t *p)
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
                      APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_new_client, ssl_ct_ssl_new_client, NULL, NULL,
-                     APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
                      APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_new_client_pre, ssl_ct_ssl_new_client_pre, NULL, NULL,
-                     APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(ssl_new_client_pre_handshake,
+                     ssl_ct_ssl_new_client_pre_handshake,
+                     NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 static const char *ct_peek_certificatefile(cmd_parms *cmd,
