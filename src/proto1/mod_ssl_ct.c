@@ -61,8 +61,6 @@ typedef struct ct_callback_info {
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
-static apr_hash_t *sct_hash;
-
 #define FINGERPRINT_SIZE 60
 
 static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
@@ -153,14 +151,6 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
     }
 
     return rv;
-}
-
-static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
-                               apr_pool_t *ptemp, server_rec *s)
-{
-    sct_hash = apr_hash_make(pconf);
-
-    return OK;
 }
 
 static apr_status_t get_sct(server_rec *s_main, const char *certFile, 
@@ -321,8 +311,6 @@ static void log_array(const char *file, int line, int module_index,
 
 static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_t *cert_files)
 {
-    int i;
-    const char **elts;
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
 #if 0
@@ -331,36 +319,6 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
 
     log_array(APLOG_MARK, APLOG_INFO, s, "Certificate files:", cert_files);
     sconf->cert_files = cert_files;
-
-    elts = (const char **)sconf->cert_files->elts;
-    for (i = 0; i < sconf->cert_files->nelts; i++) {
-        /* Get fingerprint of certificate for association with SCTs. */
-        const char *fn = elts[i];
-        char fingerprint[FINGERPRINT_SIZE];
-        BIO *bio;
-        X509 *x;
-        const char *leafCert;
-        apr_size_t leafCertSize;
-
-        readLeafCertificate(s, fn, s->process->pool, &leafCert, &leafCertSize);
-
-        if (leafCert) {
-            bio = BIO_new_mem_buf((void *)leafCert, leafCertSize);
-            x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
-            ap_assert(x);
-            get_fingerprint(x, fingerprint, sizeof fingerprint);
-            apr_hash_set(sct_hash, apr_pstrdup(s->process->pool, fingerprint),
-                         APR_HASH_KEY_STRING, "GARBAGE!!!");
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                         "fingerprint for %s: %s (%s)",
-                         fn, fingerprint,
-                         (char *)apr_hash_get(sct_hash, fingerprint, APR_HASH_KEY_STRING));
-        }
-        else {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                         "leaf certificate couldn't be read from %s", fn);
-        }        
-    }
 
     return OK;
 }
@@ -613,7 +571,6 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
 static void ct_register_hooks(apr_pool_t *p)
 {
-    ap_hook_check_config(ssl_ct_check_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
