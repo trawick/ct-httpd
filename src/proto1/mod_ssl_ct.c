@@ -38,7 +38,6 @@
  *    . Can't configure where to find certificate-transparency tools
  *
  * E. Known low-level code kludges
- *    . use of s_main->process->pool
  *    . uses system() instead of apr_proc_create(), which would allow better
  *      control of output
  *    . no way to log CT-awareness of backend server
@@ -183,6 +182,7 @@ static apr_status_t readLeafCertificate(server_rec *s,
 }
 
 static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
+                                                   apr_pool_t *p,
                                                    const char *certFile,
                                                    char *fingerprint,
                                                    size_t fingerprint_size)
@@ -193,7 +193,7 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
     const char *leafCert;
     apr_size_t leafCertSize;
 
-    rv = readLeafCertificate(s_main, certFile, s_main->process->pool,
+    rv = readLeafCertificate(s_main, certFile, p,
                              &leafCert, &leafCertSize);
 
     if (rv == APR_SUCCESS) {
@@ -207,17 +207,17 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
     return rv;
 }
 
-static apr_status_t get_sct(server_rec *s_main, const char *certFile, 
+static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
+                            const char *certFile,
                             const char *logURL, const char *sct_dir)
 {
-    apr_pool_t *p = s_main->process->pool;
     apr_status_t rv;
     char fingerprint[FINGERPRINT_SIZE];
     char *sct_fn;
     const char *submit_cmd;
     apr_finfo_t finfo;
 
-    rv = get_cert_fingerprint_from_file(s_main, certFile, fingerprint,
+    rv = get_cert_fingerprint_from_file(s_main, p, certFile, fingerprint,
                                         sizeof fingerprint);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
@@ -287,7 +287,8 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
             log_elts  = (const char **)sconf->log_urls->elts;
             for (i = 0; i < sconf->cert_files->nelts; i++) {
                 for (j = 0; j < sconf->log_urls->nelts; j++) {
-                    rv = get_sct(s_main, cert_elts[i], log_elts[j], SCT_BASE_DIR);
+                    rv = get_sct(s_main, pconf, cert_elts[i], log_elts[j],
+                                 SCT_BASE_DIR);
                     if (rv != APR_SUCCESS) {
                         return HTTP_INTERNAL_SERVER_ERROR;
                     }
