@@ -23,6 +23,10 @@
  *    with only a leaf certificate in the file.  Certificates loaded by
  *    SSLOpenSSLConfCmd are not supported.
  *
+ *    See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
+ *
+ * B. Everything else
+ *    *
  */
 
 #include "apr_hash.h"
