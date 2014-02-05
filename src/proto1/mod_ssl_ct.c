@@ -38,7 +38,6 @@
  *    . Can't configure where to find certificate-transparency tools
  *
  * E. Known low-level code kludges
- *    . blindly allocating 50000-byte buffer before apr_file_read_full()
  *    . use of s_main->process->pool
  *    . uses system() instead of apr_proc_create(), which would allow better
  *      control of output
@@ -65,6 +64,12 @@
 #define SCT_BASE_DIR "/tmp/scts"
 
 #define STATUS_VAR "SSL_CT_PEER_STATUS"
+
+/** A certificate file larger than this is suspect */
+#define MAX_CERT_FILE_SIZE 30000 /* eventually this can include intermediate certs */
+
+/** Limit on size of stored SCTs for a certificate */
+#define MAX_SCTS_SIZE 2000
 
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
@@ -105,6 +110,61 @@ static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
     apr_snprintf(fingerprint + i * 3, 3, "%02X", md[i]);
 }
 
+static apr_status_t readFile(apr_pool_t *p,
+                             server_rec *s,
+                             const char *fn,
+                             apr_size_t limit,
+                             char **contents,
+                             apr_size_t *contents_size)
+{
+    apr_file_t *f;
+    apr_finfo_t finfo;
+    apr_status_t rv;
+    apr_size_t nbytes;
+
+    *contents = NULL;
+    *contents_size = 0;
+
+    rv = apr_file_open(&f, fn, APR_READ | APR_BINARY, APR_FPROT_OS_DEFAULT, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "couldn't read %s", fn);
+        return rv;
+    }
+    
+    rv = apr_file_info_get(&finfo, APR_FINFO_SIZE, f);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "couldn't retrieve size of %s", fn);
+        apr_file_close(f);
+        return rv;
+    }
+
+    if (finfo.size > limit) {
+        rv = APR_ENOSPC;
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "size of %s exceeds limit", fn);
+        apr_file_close(f);
+        return rv;
+    }
+
+    nbytes = (apr_size_t)finfo.size;
+    *contents = apr_palloc(p, nbytes);
+    rv = apr_file_read_full(f, *contents, nbytes, contents_size);
+    if (rv == APR_SUCCESS) { /* shouldn't get APR_EOF since we know
+                              * how big the file is
+                              */
+        rv = APR_SUCCESS;
+    }
+    else {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "apr_file_read_full");
+    }
+    apr_file_close(f);
+
+    return rv;
+}
+
 /* As of httpd 2.5, this should only read the FIRST certificate
  * in the file.  NOT IMPLEMENTED (assumes that the leaf certificate
  * is the ONLY certificate)
@@ -114,38 +174,12 @@ static apr_status_t readLeafCertificate(server_rec *s,
                                         const char **leafCert, 
                                         apr_size_t *leafCertSize)
 {
-    /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
-    apr_file_t *f;
     apr_status_t rv;
-    char *buf;
-    apr_size_t nbytes, bytes_read;
 
-    *leafCert = NULL;
-    *leafCertSize = 0;
-    rv = apr_file_open(&f, fn, APR_READ | APR_BINARY, APR_FPROT_OS_DEFAULT, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "couldn't read %s", fn);
-    }
+    /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
 
-    if (rv == APR_SUCCESS) {
-        /* XXX Stupid, but accessing all the server certificates needs to
-         * be changed anyway to deal with SSLOpenSSLConfCmd
-         */
-        nbytes = 50000;
-        buf = apr_palloc(p, nbytes);
-        rv = apr_file_read_full(f, buf, nbytes, &bytes_read);
-        if (rv == APR_EOF) {
-            *leafCert = buf;
-            *leafCertSize = bytes_read;
-            rv = APR_SUCCESS;
-        }
-        else {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "apr_file_read_full");
-        }
-        apr_file_close(f);
-    }
+    rv = readFile(p, s, fn, MAX_CERT_FILE_SIZE, (char **)leafCert,
+                  leafCertSize);
 
     return rv;
 }
@@ -275,8 +309,6 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
                               server_rec *s,
                               char **scts, apr_size_t *scts_len)
 {
-    apr_file_t *f;
-    apr_size_t nbytes;
     apr_status_t rv;
     char *sct_fn;
 
@@ -291,28 +323,8 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
         return rv;
     }
 
-    rv = apr_file_open(&f, sct_fn, APR_READ | APR_BINARY, APR_FPROT_OS_DEFAULT, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                     "couldn't find SCT in %s! (it was there at init)",
-                     sct_fn);
-        return rv;
-    }
+    rv = readFile(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
 
-    /* For now the single file has what we want as-is. */
-    nbytes = 50000;
-    *scts = apr_palloc(p, nbytes);
-    rv = apr_file_read_full(f, *scts, nbytes, scts_len);
-    if (rv == APR_EOF) { /* GOOD! */
-        rv = APR_SUCCESS;
-    }
-    else {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "failed to read %s", sct_fn);
-    }
-
-    apr_file_close(f);
-    
     return rv;
 }
 
