@@ -14,6 +14,17 @@
  * limitations under the License.
  */
 
+/*
+ * Issues
+ *
+ * A. Certificates
+ *    These are read to obtain fingerprints and to submit to logs.
+ *    The module assumes that they are configured via SSLCertificateFile
+ *    with only a leaf certificate in the file.  Certificates loaded by
+ *    SSLOpenSSLConfCmd are not supported.
+ *
+ */
+
 #include "apr_hash.h"
 #include "apr_strings.h"
 
