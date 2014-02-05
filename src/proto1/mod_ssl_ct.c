@@ -17,32 +17,34 @@
 /*
  * Issues
  *
- * A. Certificates
- *    These are read to obtain fingerprints and to submit to logs.
- *    The module assumes that they are configured via SSLCertificateFile
- *    with only a leaf certificate in the file.  Certificates loaded by
- *    SSLOpenSSLConfCmd are not supported.
+ * * Certificates
+ *   These are read to obtain fingerprints and to submit to logs.
+ *   The module assumes that they are configured via SSLCertificateFile
+ *   with only a leaf certificate in the file.  Certificates loaded by
+ *   SSLOpenSSLConfCmd are not supported.
  *
- *    See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
+ *   See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
  *
- * B. Only one SCT can be stored per certificate
+ * * Only one SCT can be stored per certificate
+ * * SCTs can only be stored at startup
+ * * No way to add SCT provided by admin in a file to SCT from log
+ *   (Either you use this module and get them from log(s) or you
+ *   use SSLOpenSSLConfCmd to configure a file.)
+ * * Are we really getting the SCT?  That needs to be tested :)
+ * * Proxy flow should queue the server cert and SCT(s) for audit
  *
- * C. Are we really getting the SCT?
+ * * Configuration kludges
+ *   . Can't configure where to store SCTs
+ *   . Don't recognize that only one log is supported
+ *   . Don't use log URL
+ *   . Can't configure where to find certificate-transparency tools
  *
- * D. Proxy flow should queue the server cert and SCT(s) for audit
+ * * Known low-level code kludges
+ *   . uses system() instead of apr_proc_create(), which would allow better
+ *     control of output
+ *   . no way to log CT-awareness of backend server
  *
- * D. Configuration kludges
- *    . Can't configure where to store SCTs
- *    . Don't recognize that only one log is supported
- *    . Don't use log URL
- *    . Can't configure where to find certificate-transparency tools
- *
- * E. Known low-level code kludges
- *    . uses system() instead of apr_proc_create(), which would allow better
- *      control of output
- *    . no way to log CT-awareness of backend server
- *
- * F. Everything else
+ * * Everything else
  *    *
  *
  
