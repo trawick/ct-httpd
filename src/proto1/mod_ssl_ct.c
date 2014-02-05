@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "apr_hash.h"
 #include "apr_strings.h"
 
 #include "httpd.h"
@@ -43,6 +44,8 @@ typedef struct ct_callback_info {
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
+static apr_hash_t *sct_hash;
+
 #define FINGERPRINT_SIZE 60
 
 static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
@@ -71,29 +74,15 @@ static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
 static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
                                apr_pool_t *ptemp, server_rec *s)
 {
-    apr_status_t rv;
-    int forked, threaded;
-
-    rv = ap_mpm_query(AP_MPMQ_IS_FORKED, &forked);
-    if (rv == APR_SUCCESS) {
-        rv = ap_mpm_query(AP_MPMQ_IS_THREADED, &threaded);
-    }
-
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "MPM query of FORKED or THREADED capability failed");
-        return HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    if (forked != AP_MPMQ_NOT_SUPPORTED && threaded != AP_MPMQ_NOT_SUPPORTED) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "This module does not currently support forked, threaded MPMs like worker or event.");
-        return HTTP_INTERNAL_SERVER_ERROR;
-    }
+    sct_hash = apr_hash_make(pconf);
 
     return OK;
 }
 
+/* As of httpd 2.5, this should only read the FIRST certificate
+ * in the file.  NOT IMPLEMENTED (assumes that the leaf certificate
+ * is the ONLY certificate)
+ */
 static void readLeafCertificate(server_rec *s,
                                 const char *fn, apr_pool_t *p,
                                 const char **leafCert, apr_size_t *leafCertSize)
@@ -174,9 +163,12 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
             x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
             ap_assert(x);
             get_fingerprint(x, fingerprint, sizeof fingerprint);
+            apr_hash_set(sct_hash, apr_pstrdup(s->process->pool, fingerprint),
+                         APR_HASH_KEY_STRING, "GARBAGE!!!");
             ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                         "fingerprint for %s: %s",
-                         fn, fingerprint);
+                         "fingerprint for %s: %s (%s)",
+                         fn, fingerprint,
+                         (char *)apr_hash_get(sct_hash, fingerprint, APR_HASH_KEY_STRING));
         }
         else {
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
@@ -280,6 +272,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     X509 *x;
     char fingerprint[FINGERPRINT_SIZE];
+    const unsigned char *sct;
 
     if (!is_client_ct_aware(c)) {
         /* Hmmm...  Is this actually called if the client doesn't include
@@ -305,8 +298,15 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
                   ext_type);
 
     /* need to get the real SCT(s) */
-    *out = (const unsigned char *)"GARBAGE";
-    *outlen = 8;
+    sct = (const unsigned char *)apr_hash_get(sct_hash, fingerprint,
+                                              APR_HASH_KEY_STRING);
+    if (sct) {
+        *out = sct;
+    }
+    else {
+        *out = (const unsigned char *)"NO SCT!";
+    }
+    *outlen = (unsigned short)(strlen((const char *)*out) + 1);
 
     return 1;
 }
