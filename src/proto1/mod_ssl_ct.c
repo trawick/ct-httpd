@@ -25,11 +25,33 @@
  *
  *    See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
  *
- * B. Everything else
+ * B. Only one SCT can be stored per certificate
+ *
+ * C. Are we really getting the SCT?
+ *
+ * D. Proxy flow should queue the server cert and SCT(s) for audit
+ *
+ * D. Configuration kludges
+ *    . Can't configure where to store SCTs
+ *    . Don't recognize that only one log is supported
+ *    . Don't use log URL
+ *    . Can't configure where to find certificate-transparency tools
+ *
+ * E. Known low-level code kludges
+ *    . blindly allocating 50000-byte buffer before apr_file_read_full()
+ *    . use of s_main->process->pool
+ *    . uses system() instead of apr_proc_create(), which would allow better
+ *      control of output
+ *    . serverExtensionCallback2() returns "NO SCT!" as SCT if we don't have
+ *      one ;)
+ *    . no way to log CT-awareness of backend server
+ *
+ * F. Everything else
  *    *
+ *
+ 
  */
 
-#include "apr_hash.h"
 #include "apr_strings.h"
 
 #include "httpd.h"
@@ -582,15 +604,6 @@ static void ct_register_hooks(apr_pool_t *p)
                      NULL, NULL, APR_HOOK_MIDDLE);
 }
 
-static const char *ct_peek_certificatefile(cmd_parms *cmd,
-                                           void *dcfg,
-                                           const char *arg)
-{
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
-                 "Certificate file: %s", arg);
-    return NULL;
-}
-
 static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config *sconf)
 {
     apr_status_t rv;
@@ -635,8 +648,6 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
 
 static const command_rec ct_cmds[] =
 {
-    AP_INIT_TAKE1("SSLCertificateFile", ct_peek_certificatefile, NULL, RSRC_CONF,
-                  "xxxxx"),
     AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
                       "List of Certificate Transparency Log URLs"),
     {NULL}
