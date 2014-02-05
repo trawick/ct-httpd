@@ -41,8 +41,6 @@
  *    . use of s_main->process->pool
  *    . uses system() instead of apr_proc_create(), which would allow better
  *      control of output
- *    . serverExtensionCallback2() returns "NO SCT!" as SCT if we don't have
- *      one ;)
  *    . no way to log CT-awareness of backend server
  *
  * F. Everything else
@@ -479,9 +477,8 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
         *outlen = scts_len;
     }
     else {
-        /* XXX Do not return the extension if we have no SCT! */
-        *out = (const unsigned char *)"NO SCT!";
-        *outlen = (unsigned short)(strlen((const char *)*out) + 1);
+        /* Skip this extension for ServerHello */
+        return -1;
     }
 
     return 1;
