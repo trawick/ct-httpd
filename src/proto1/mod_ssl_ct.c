@@ -27,13 +27,8 @@
  *
  *   Ah, but the log needs to see intermediate certificates too...
  *
- * + Only one SCT can be retrieved per certificate, so we're limited to a
- *   single log.
  * + SCTs can only be stored at startup (no daemon process to refresh them yet)
- * + No way to add SCT(s) provided by admin in a file to SCT(s) from log(s)
- *   (Either you use this module and get them from log(s) or you
- *   use SSLOpenSSLConfCmd to configure a file with the extension.)
- * + Are we really sending the SCT correctly?  That needs to be tested in
+ * + Are we really sending the SCT(s) correctly?  That needs to be tested in
  *   detail.  But SSL client used by mod_proxy needs some minimal verification
  *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
@@ -49,6 +44,11 @@
  *
  * + Everything else
  *   . ??
+ *
+ * + Stuff to remember, or note elsewhere:
+ *   . "SCTs embedded in the certificate won't be sent for resumption handshakes of course. 
+ *     The TLS extension will be sent in the same cases as SCTs embedded in the certificate.
+ *     (And the TLS extension doesn't need the CA to do anything.)"  (Adam Langley)
  *
  */
 
@@ -234,16 +234,149 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
     return rv;
 }
 
-static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
-                            const char *certFile,
-                            const apr_uri_t *logURL, const char *sct_dir,
-                            const char *ct_exe)
+/* SCT storage on disk:
+ *   <rootdir>/<fingerprint>/hostname_port_uri.sct   SCT for cert with this fingerprint
+ *                                                   from this log (could be any number
+ *                                                   of these)
+ *   <rootdir>/<fingerprint>/<anything>.sct          SCT maintained by the administrator
+ *                                                   (file is optional; could be any number
+ *                                                   of these)
+ *   <rootdir>/<fingerprint>/collated                one or more SCTs ready to send
+ *                                                   (this is all that the web server
+ *                                                   processes care about)
+ */
+
+#define COLLATED_SCTS_BASENAME "collated"
+
+static apr_status_t collate_scts(server_rec *s_main, apr_pool_t *p,
+                                 const char *cert_sct_dir)
+{
+    /* Read the various .sct files and stick them together in a single file */
+    apr_dir_t *d;
+    apr_status_t rv;
+    apr_finfo_t finfo;
+    char *tmp_collated_fn, *collated_fn, *cur_sct_file;
+    apr_file_t *tmpfile;
+
+    rv = apr_filepath_merge(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, 0, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "can't build path based on %s", cert_sct_dir);
+        return rv;
+    }
+
+    tmp_collated_fn = apr_pstrcat(p, collated_fn, ".tmp", NULL);
+
+    rv = apr_file_open(&tmpfile, tmp_collated_fn,
+                       APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE|APR_FOPEN_BINARY,
+                       APR_FPROT_OS_DEFAULT, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "can't create %s", tmp_collated_fn);
+        return rv;
+    }
+
+    rv = apr_dir_open(&d, cert_sct_dir, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main, "couldn't read dir %s",
+                     cert_sct_dir);
+        return rv;
+    }
+
+    while ((rv = apr_dir_read(&finfo, APR_FINFO_MTIME|APR_FINFO_NAME, d)) == APR_SUCCESS) {
+        /* only care about files which end in ".sct" */
+        size_t len = strlen(finfo.name);
+        char *scts;
+        apr_size_t scts_size, bytes_written;
+
+        if (len < strlen("X.sct")) {
+            continue;
+        }
+
+        if (strcmp(finfo.name + len - 4, ".sct")) {
+            continue;
+        }
+
+        rv = apr_filepath_merge(&cur_sct_file, cert_sct_dir, finfo.name, 0, p);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                         "can't build filename from %s and %s",
+                         cert_sct_dir, finfo.name);
+            break;
+        }
+
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                     "sct file %s",
+                     cur_sct_file);
+
+        rv = readFile(p, s_main, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
+        if (rv != APR_SUCCESS) {
+            break;
+        }
+
+        rv = apr_file_write_full(tmpfile, scts, scts_size, &bytes_written);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                         "can't write %" APR_SIZE_T_FMT " bytes to %s",
+                         scts_size, tmp_collated_fn);
+            break;
+        }
+    }
+
+    if (rv == APR_ENOENT) {
+        rv = APR_SUCCESS;
+    }
+    else if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main, "couldn't read dir %s",
+                     cert_sct_dir);
+    }
+
+    apr_file_close(tmpfile);
+    apr_dir_close(d);
+
+    if (rv == APR_SUCCESS) {
+        /* XXX grab a mutex that request thread has to grab too */
+        apr_file_remove(collated_fn, p);
+        rv = apr_file_rename(tmp_collated_fn, collated_fn, p);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                         "couldn't rename %s to %s",
+                         tmp_collated_fn, collated_fn);
+        }
+    }
+
+    return rv;
+}
+
+static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *logURL)
+{
+    char *fn = apr_psprintf(p, "%s_%s_%s.sct",
+                            logURL->hostname, logURL->port_str, logURL->path);
+    char *ch;
+
+    ch = fn;
+    while (*ch) {
+        switch(*ch) {
+        /* chars that shouldn't be used in a filename */
+        case ':':
+        case '/':
+            *ch = '-';
+        }
+        ++ch;
+    }
+    return fn;
+}
+
+static apr_status_t get_cert_sct_dir(server_rec *s_main, apr_pool_t *p,
+                                     const char *certFile,
+                                     const char *sct_dir,
+                                     char **cert_sct_dir_out)
 {
     apr_status_t rv;
     char fingerprint[FINGERPRINT_SIZE];
-    char *sct_fn;
-    const char *submit_cmd;
-    apr_finfo_t finfo;
+    char *cert_sct_dir;
+
+    *cert_sct_dir_out = NULL;
 
     rv = get_cert_fingerprint_from_file(s_main, p, certFile, fingerprint,
                                         sizeof fingerprint);
@@ -258,10 +391,36 @@ static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
                  "fingerprint for %s is %s",
                  certFile, fingerprint);
 
-    rv = apr_filepath_merge(&sct_fn, sct_dir, fingerprint, 0, p);
+    rv = apr_filepath_merge(&cert_sct_dir, sct_dir, fingerprint, 0, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
                      "failed to construct path to SCT for %s", certFile);
+        return rv;
+    }
+
+    *cert_sct_dir_out = cert_sct_dir;
+    return APR_SUCCESS;
+}
+
+static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
+                            const char *certFile,
+                            const char *cert_sct_dir,
+                            const apr_uri_t *logURL, const char *sct_dir,
+                            const char *ct_exe)
+{
+    apr_status_t rv;
+    char *sct_fn;
+    const char *submit_cmd;
+    apr_finfo_t finfo;
+    const char *logURL_basename;
+
+    logURL_basename = url_to_fn(p, logURL);
+
+    rv = apr_filepath_merge(&sct_fn, cert_sct_dir, logURL_basename, 0, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "failed to construct path to SCT for %s (log fn %s)",
+                     certFile, logURL_basename);
         return rv;
     }
 
@@ -309,19 +468,43 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
         apr_status_t rv;
         const char **cert_elts;
         apr_uri_t *log_elts;
+        char *cert_sct_dir;
 
         if (sconf && sconf->cert_files) {
 
             cert_elts = (const char **)sconf->cert_files->elts;
             log_elts  = (apr_uri_t *)sconf->log_urls->elts;
             for (i = 0; i < sconf->cert_files->nelts; i++) {
+
+                rv = get_cert_sct_dir(s_main, pconf, cert_elts[i],
+                                      sconf->sct_storage, &cert_sct_dir);
+                if (rv != APR_SUCCESS) {
+                        return HTTP_INTERNAL_SERVER_ERROR;
+                }
+
+                if (!dir_exists(pconf, cert_sct_dir)) {
+                    rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, pconf);
+                    if (rv != APR_SUCCESS) {
+                        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                                     "can't create directory %s",
+                                     cert_sct_dir);
+                        return HTTP_INTERNAL_SERVER_ERROR;
+                    }
+                }
+
                 for (j = 0; j < sconf->log_urls->nelts; j++) {
-                    rv = get_sct(s_main, pconf, cert_elts[i], &log_elts[j],
+                    rv = get_sct(s_main, pconf, cert_elts[i],
+                                 cert_sct_dir,
+                                 &log_elts[j],
                                  sconf->sct_storage,
                                  sconf->ct_exe);
                     if (rv != APR_SUCCESS) {
                         return HTTP_INTERNAL_SERVER_ERROR;
                     }
+                }
+                rv = collate_scts(s_main, pconf, cert_sct_dir);
+                if (rv != APR_SUCCESS) {
+                    return HTTP_INTERNAL_SERVER_ERROR;
                 }
             }
 
@@ -360,9 +543,20 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
                               char **scts, apr_size_t *scts_len)
 {
     apr_status_t rv;
-    char *sct_fn;
+    char *cert_dir, *sct_fn;
 
-    rv = apr_filepath_merge(&sct_fn, sct_dir, fingerprint, 0, p);
+    rv = apr_filepath_merge(&cert_dir, sct_dir, fingerprint, 0, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK,
+                     /* this worked at init! */
+                     APLOG_CRIT,
+                     rv, s,
+                     "failed to construct path to SCT for cert with fingerprint %s",
+                     fingerprint);
+        return rv;
+    }
+
+    rv = apr_filepath_merge(&sct_fn, cert_dir, COLLATED_SCTS_BASENAME, 0, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK,
                      /* this worked at init! */
@@ -775,10 +969,6 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
 
     if (argc < 1) {
         return "CTLogs: At least one log URL must be provided";
-    }
-
-    if (argc > 1) {
-        return "CTLogs: Only one log can be used at the moment";
     }
 
     for (i = 0; i < argc; i++) {
