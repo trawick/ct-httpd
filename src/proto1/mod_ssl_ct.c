@@ -34,7 +34,6 @@
  * * Proxy flow should queue the server cert and SCT(s) for audit
  *
  * * Configuration kludges
- *   . Can't configure where to store SCTs
  *   . Don't recognize that only one log is supported
  *   . Don't use log URL
  *   . Can't configure where to find certificate-transparency tools
@@ -60,8 +59,6 @@
 
 #include "ssl_hooks.h"
 
-#define SCT_BASE_DIR "/tmp/scts"
-
 #define STATUS_VAR "SSL_CT_PEER_STATUS"
 
 /** A certificate file larger than this is suspect */
@@ -73,6 +70,7 @@
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
     apr_array_header_t *cert_files;
+    const char *sct_storage;
 } ct_server_config;
 
 typedef struct ct_conn_config {
@@ -107,6 +105,14 @@ static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
         i++;
     }
     apr_snprintf(fingerprint + i * 3, 3, "%02X", md[i]);
+}
+
+static int dir_exists(apr_pool_t *p, const char *dirname)
+{
+    apr_finfo_t finfo;
+    apr_status_t rv = apr_stat(&finfo, dirname, APR_FINFO_TYPE, p);
+
+    return rv == APR_SUCCESS && finfo.filetype == APR_DIR;
 }
 
 static apr_status_t readFile(apr_pool_t *p,
@@ -290,7 +296,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
             for (i = 0; i < sconf->cert_files->nelts; i++) {
                 for (j = 0; j < sconf->log_urls->nelts; j++) {
                     rv = get_sct(s_main, pconf, cert_elts[i], log_elts[j],
-                                 SCT_BASE_DIR);
+                                 sconf->sct_storage);
                     if (rv != APR_SUCCESS) {
                         return HTTP_INTERNAL_SERVER_ERROR;
                     }
@@ -300,6 +306,21 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
         }
 
         s = s->next;
+    }
+
+    return OK;
+}
+
+static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
+                              apr_pool_t *ptemp, server_rec *s_main)
+{
+    ct_server_config *sconf = ap_get_module_config(s_main->module_config,
+                                                   &ssl_ct_module);
+
+    if (!sconf->sct_storage) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "Directive SCSCTStorage is required");
+        return HTTP_INTERNAL_SERVER_ERROR;
     }
 
     return OK;
@@ -443,6 +464,8 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
                                     unsigned short *outlen, void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+    ct_server_config *sconf = ap_get_module_config(c->base_server->module_config,
+                                                   &ssl_ct_module);
     X509 *x;
     char fingerprint[FINGERPRINT_SIZE];
     const unsigned char *scts;
@@ -473,7 +496,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
                   ext_type);
 
     rv = read_scts(c->pool, fingerprint,
-                   SCT_BASE_DIR,
+                   sconf->sct_storage,
                    c->base_server, (char **)&scts, &scts_len);
     if (rv == APR_SUCCESS) {
         *out = scts;
@@ -600,11 +623,14 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
         ? virt->log_urls
         : base->log_urls;
 
+    conf->sct_storage = base->sct_storage;
+
     return conf;
 }
 
 static void ct_register_hooks(apr_pool_t *p)
 {
+    ap_hook_check_config(ssl_ct_check_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
@@ -643,6 +669,12 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
     apr_status_t rv;
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
     if (argc < 1) {
         return "At least one log URL must be provided";
     }
@@ -658,10 +690,32 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
     return NULL;
 }
 
+static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    if (!dir_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool, "CTSCTStorage: Directory ", arg,
+                           " does not exist", NULL);
+    }
+
+    sconf->sct_storage = arg;
+
+    return NULL;
+}
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
                       "List of Certificate Transparency Log URLs"),
+    AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
+                  "Location to store SCTs obtained from logs"),
     {NULL}
 };
 
