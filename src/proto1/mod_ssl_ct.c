@@ -26,18 +26,17 @@
  *   See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
  *
  * * Only one SCT can be stored per certificate
- * * SCTs can only be stored at startup
+ * * SCTs can only be stored at startup (no daemon process to refresh yet)
  * * No way to add SCT provided by admin in a file to SCT from log
  *   (Either you use this module and get them from log(s) or you
- *   use SSLOpenSSLConfCmd to configure a file.)
+ *   use SSLOpenSSLConfCmd to configure a file with the extension.)
  * * Are we really getting the SCT?  That needs to be tested :)
  * * Proxy flow should queue the server cert and SCT(s) for audit
  *
  * * Configuration kludges
- *   . Don't recognize that only one log is supported
- *   . Don't use log URL
+ *   . ??
  *
- * * Known low-level code kludges
+ * * Known low-level code kludges/problems
  *   . uses system() instead of apr_proc_create(), which would allow better
  *     control of output
  *   . no way to log CT-awareness of backend server
@@ -45,7 +44,6 @@
  * * Everything else
  *    *
  *
- 
  */
 
 #include "apr_strings.h"
@@ -232,7 +230,7 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
 
 static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
                             const char *certFile,
-                            const char *logURL, const char *sct_dir,
+                            const apr_uri_t *logURL, const char *sct_dir,
                             const char *ct_exe)
 {
     apr_status_t rv;
@@ -273,8 +271,8 @@ static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
                  "Did not find SCT for %s in %s, must fetch",
                  certFile, sct_fn);
 
-    submit_cmd = apr_psprintf(p, "%s --ct_server=localhost:8888 --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
-                              ct_exe, certFile, sct_fn);
+    submit_cmd = apr_psprintf(p, "%s --ct_server=%s --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
+                              ct_exe, logURL->hostinfo, certFile, sct_fn);
 
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
                  "Running >%s<", submit_cmd);
@@ -303,15 +301,16 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                                                        &ssl_ct_module);
         int i, j;
         apr_status_t rv;
-        const char **cert_elts, **log_elts;
+        const char **cert_elts;
+        apr_uri_t *log_elts;
 
         if (sconf && sconf->cert_files) {
 
             cert_elts = (const char **)sconf->cert_files->elts;
-            log_elts  = (const char **)sconf->log_urls->elts;
+            log_elts  = (apr_uri_t *)sconf->log_urls->elts;
             for (i = 0; i < sconf->cert_files->nelts; i++) {
                 for (j = 0; j < sconf->log_urls->nelts; j++) {
-                    rv = get_sct(s_main, pconf, cert_elts[i], log_elts[j],
+                    rv = get_sct(s_main, pconf, cert_elts[i], &log_elts[j],
                                  sconf->sct_storage,
                                  sconf->ct_exe);
                     if (rv != APR_SUCCESS) {
@@ -678,11 +677,23 @@ static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config
             || !uri.path) {
             rv = APR_EINVAL;
         }
-        if (!sconf->log_urls) {
-            sconf->log_urls = apr_array_make(p, 1, sizeof(uri));
-            puri = (apr_uri_t *)apr_array_push(sconf->log_urls);
-            *puri = uri;
+        if (strcmp(uri.scheme, "http")) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+                         "Scheme must be \"http\" instead of \"%s\"",
+                         uri.scheme);
+            rv = APR_EINVAL;
         }
+        if (strcmp(uri.path, "/")) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+                         "No URI path other than \"/\" is currently accepted (you have \"%s\")",
+                         uri.path);
+            rv = APR_EINVAL;
+        }
+        if (!sconf->log_urls) {
+            sconf->log_urls = apr_array_make(p, 2, sizeof(uri));
+        }
+        puri = (apr_uri_t *)apr_array_push(sconf->log_urls);
+        *puri = uri;
     }
     return rv;
 }
@@ -700,13 +711,17 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
     }
 
     if (argc < 1) {
-        return "At least one log URL must be provided";
+        return "CTLogs: At least one log URL must be provided";
+    }
+
+    if (argc > 1) {
+        return "CTLogs: Only one log can be used at the moment";
     }
 
     for (i = 0; i < argc; i++) {
         rv = save_log_url(cmd->pool, argv[i], sconf);
         if (rv) {
-            return apr_psprintf(cmd->pool, "Error with log URL %s: (%d)%pm",
+            return apr_psprintf(cmd->pool, "CTLogs: Error with log URL %s: (%d)%pm",
                                 argv[i], rv, &rv);
         }
     }
