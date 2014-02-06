@@ -36,7 +36,6 @@
  * * Configuration kludges
  *   . Don't recognize that only one log is supported
  *   . Don't use log URL
- *   . Can't configure where to find certificate-transparency tools
  *
  * * Known low-level code kludges
  *   . uses system() instead of apr_proc_create(), which would allow better
@@ -59,6 +58,12 @@
 
 #include "ssl_hooks.h"
 
+#ifdef WIN32
+#define DOTEXE ".exe"
+#else
+#define DOTEXE ""
+#endif
+
 #define STATUS_VAR "SSL_CT_PEER_STATUS"
 
 /** A certificate file larger than this is suspect */
@@ -71,6 +76,8 @@ typedef struct ct_server_config {
     apr_array_header_t *log_urls;
     apr_array_header_t *cert_files;
     const char *sct_storage;
+    const char *ct_tools_dir;
+    const char *ct_exe;
 } ct_server_config;
 
 typedef struct ct_conn_config {
@@ -113,6 +120,14 @@ static int dir_exists(apr_pool_t *p, const char *dirname)
     apr_status_t rv = apr_stat(&finfo, dirname, APR_FINFO_TYPE, p);
 
     return rv == APR_SUCCESS && finfo.filetype == APR_DIR;
+}
+
+static int file_exists(apr_pool_t *p, const char *filename)
+{
+    apr_finfo_t finfo;
+    apr_status_t rv = apr_stat(&finfo, filename, APR_FINFO_TYPE, p);
+
+    return rv == APR_SUCCESS && finfo.filetype == APR_REG;
 }
 
 static apr_status_t readFile(apr_pool_t *p,
@@ -217,7 +232,8 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s_main,
 
 static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
                             const char *certFile,
-                            const char *logURL, const char *sct_dir)
+                            const char *logURL, const char *sct_dir,
+                            const char *ct_exe)
 {
     apr_status_t rv;
     char fingerprint[FINGERPRINT_SIZE];
@@ -257,8 +273,8 @@ static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
                  "Did not find SCT for %s in %s, must fetch",
                  certFile, sct_fn);
 
-    submit_cmd = apr_psprintf(p, "/home/trawick/git/certificate-transparency/src/client/ct --ct_server=localhost:8888 --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
-                              certFile, sct_fn);
+    submit_cmd = apr_psprintf(p, "%s --ct_server=localhost:8888 --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
+                              ct_exe, certFile, sct_fn);
 
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
                  "Running >%s<", submit_cmd);
@@ -296,7 +312,8 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
             for (i = 0; i < sconf->cert_files->nelts; i++) {
                 for (j = 0; j < sconf->log_urls->nelts; j++) {
                     rv = get_sct(s_main, pconf, cert_elts[i], log_elts[j],
-                                 sconf->sct_storage);
+                                 sconf->sct_storage,
+                                 sconf->ct_exe);
                     if (rv != APR_SUCCESS) {
                         return HTTP_INTERNAL_SERVER_ERROR;
                     }
@@ -319,7 +336,13 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
 
     if (!sconf->sct_storage) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
-                     "Directive SCSCTStorage is required");
+                     "Directive CTSCTStorage is required");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (!sconf->ct_tools_dir) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "Directive CTToolsDir is required");
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -624,6 +647,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
         : base->log_urls;
 
     conf->sct_storage = base->sct_storage;
+    conf->ct_tools_dir = base->ct_tools_dir;
 
     return conf;
 }
@@ -710,12 +734,48 @@ static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
+{
+    apr_status_t rv;
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    if (!dir_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool, "CTToolsDir: Directory ", arg,
+                           " does not exist", NULL);
+    }
+
+    rv = apr_filepath_merge((char **)&sconf->ct_exe, arg,  "src/client/ct" DOTEXE,
+                            0, cmd->pool);
+    if (rv != APR_SUCCESS) {
+        return apr_psprintf(cmd->pool,
+                            "CTToolsDir: Couldn't build path to ct" DOTEXE
+                            ": %pm", &rv);
+    }
+
+    if (!file_exists(cmd->pool, sconf->ct_exe)) {
+        return apr_pstrcat(cmd->pool, "CTToolsDir: File ", sconf->ct_exe,
+                           " does not exist", NULL);
+    }
+
+    sconf->ct_tools_dir = arg;
+
+    return NULL;
+}
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
                       "List of Certificate Transparency Log URLs"),
     AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
                   "Location to store SCTs obtained from logs"),
+    AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
+                  "Location of certificate-transparency.org tools"),
     {NULL}
 };
 
