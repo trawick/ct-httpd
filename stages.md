@@ -36,4 +36,4 @@ CTLogs http://localhost:8888/
 CTSCTStorage /tmp/newscts
 CTToolsDir /home/trawick/git/certificate-transparency
 ```
-6. The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct and Chromium from the dev channel are both CT-aware.)
+6. The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
