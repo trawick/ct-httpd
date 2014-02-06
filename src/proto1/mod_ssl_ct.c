@@ -27,12 +27,15 @@
  *
  *   Ah, but the log needs to see intermediate certificates too...
  *
- * + Only one SCT can be stored per certificate
- * + SCTs can only be stored at startup (no daemon process to refresh yet)
- * + No way to add SCT(s) provided by admin in a file to SCT(s) from log
+ * + Only one SCT can be retrieved per certificate, so we're limited to a
+ *   single log.
+ * + SCTs can only be stored at startup (no daemon process to refresh them yet)
+ * + No way to add SCT(s) provided by admin in a file to SCT(s) from log(s)
  *   (Either you use this module and get them from log(s) or you
  *   use SSLOpenSSLConfCmd to configure a file with the extension.)
- * + Are we really sending the SCT correctly?  That needs to be tested :)
+ * + Are we really sending the SCT correctly?  That needs to be tested in
+ *   detail.  But SSL client used by mod_proxy needs some minimal verification
+ *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit
  *
  * + Configuration kludges
