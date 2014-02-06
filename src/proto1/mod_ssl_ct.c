@@ -17,7 +17,7 @@
 /*
  * Issues
  *
- * * Certificates
+ * + Certificates
  *   These are read to obtain fingerprints and to submit to logs.
  *   The module assumes that they are configured via SSLCertificateFile
  *   with only a leaf certificate in the file.  Certificates loaded by
@@ -25,24 +25,26 @@
  *
  *   See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
  *
- * * Only one SCT can be stored per certificate
- * * SCTs can only be stored at startup (no daemon process to refresh yet)
- * * No way to add SCT provided by admin in a file to SCT from log
+ *   Ah, but the log needs to see intermediate certificates too...
+ *
+ * + Only one SCT can be stored per certificate
+ * + SCTs can only be stored at startup (no daemon process to refresh yet)
+ * + No way to add SCT(s) provided by admin in a file to SCT(s) from log
  *   (Either you use this module and get them from log(s) or you
  *   use SSLOpenSSLConfCmd to configure a file with the extension.)
- * * Are we really getting the SCT?  That needs to be tested :)
- * * Proxy flow should queue the server cert and SCT(s) for audit
+ * + Are we really sending the SCT correctly?  That needs to be tested :)
+ * + Proxy flow should queue the server cert and SCT(s) for audit
  *
- * * Configuration kludges
+ * + Configuration kludges
  *   . ??
  *
- * * Known low-level code kludges/problems
+ * + Known low-level code kludges/problems
  *   . uses system() instead of apr_proc_create(), which would allow better
  *     control of output
  *   . no way to log CT-awareness of backend server
  *
- * * Everything else
- *    *
+ * + Everything else
+ *   . ??
  *
  */
 
