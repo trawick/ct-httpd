@@ -77,11 +77,39 @@ Index: modules/ssl/ssl_engine_init.c
      return APR_SUCCESS;
  }
  
+Index: modules/ssl/ssl_engine_kernel.c
+===================================================================
+--- modules/ssl/ssl_engine_kernel.c	(revision 1564954)
++++ modules/ssl/ssl_engine_kernel.c	(working copy)
+@@ -32,6 +32,9 @@
+ #include "mod_ssl.h"
+ #include "util_md5.h"
+ 
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_proxy_verify,(server_rec *s,conn_rec *c,SSL *ssl, X509_STORE_CTX *ctx),
++                                   (s,c,ssl,ctx),OK,DECLINED);
++
+ static void ssl_configure_env(request_rec *r, SSLConnRec *sslconn);
+ #ifdef HAVE_TLSEXT
+ static int ssl_find_vhost(void *servername, conn_rec *c, server_rec *s);
+@@ -1410,6 +1413,13 @@
+                     "chain" : (mctx->crl_check_mode == SSL_CRLCHECK_LEAF ?
+                                "leaf" : "none"));
+ 
++    if (sc->proxy_enabled) {
++        apr_status_t rv = ap_run_ssl_proxy_verify(s, conn, ssl, ctx);
++        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, rv, conn,
++                      "ssl_proxy_verify %s",
++                      rv == APR_SUCCESS ? "succeeded" : "failed");
++    }
++
+     /*
+      * Check for optionally acceptable non-verifiable issuer situation
+      */
 Index: modules/ssl/ssl_hooks.h
 ===================================================================
 --- modules/ssl/ssl_hooks.h	(revision 0)
 +++ modules/ssl/ssl_hooks.h	(working copy)
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,33 @@
 +/* Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
 + * this work for additional information regarding copyright ownership.
@@ -111,6 +139,7 @@ Index: modules/ssl/ssl_hooks.h
 +
 +AP_DECLARE_HOOK(int,ssl_server_init,(server_rec *,SSL_CTX *,apr_array_header_t *))
 +AP_DECLARE_HOOK(int,ssl_new_client_pre_handshake,(server_rec *,conn_rec *,SSL *ssl))
++AP_DECLARE_HOOK(int,ssl_proxy_verify,(server_rec *,conn_rec *,SSL *ssl,X509_STORE_CTX *ctx))
 +AP_DECLARE_HOOK(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,apr_pool_t *ptemp,int is_proxy,SSL_CTX *ctx))
 +
 +#endif /* SSL_HOOKS_H */

@@ -36,7 +36,8 @@
  * + Are we really sending the SCT correctly?  That needs to be tested in
  *   detail.  But SSL client used by mod_proxy needs some minimal verification
  *   implemented anyway.
- * + Proxy flow should queue the server cert and SCT(s) for audit
+ * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
+ *   that facilitates the auditing support in the c-t tools.
  *
  * + Configuration kludges
  *   . ??
@@ -427,6 +428,31 @@ static int is_client_ct_aware(conn_rec *c)
     return conncfg && conncfg->peer_ct_aware;
 }
 
+/* Look at SSLClient::VerifyCallback() and WriteSSLClientCTData()
+ * for validation and saving of data for auditing in a form that
+ * the c-t tools can use.
+ */
+
+/* Enqueue data from server for off-line audit (cert, SCT(s))
+ * Make a simple effort to avoid re-enqueueing the same data in
+ * order to save space.  (With reverse proxy it will be the same
+ * data over and over.)
+ */
+static void save_server_data(conn_rec *c, const X509 *peer_cert,
+                             const char *scts, apr_size_t scts_size)
+{
+}
+
+/* XXX
+ * perform quick sanity check of server SCT(s) during handshake;
+ * errors should result in fatal alert
+ */
+static apr_status_t validate_server_data(conn_rec *c, const X509 *peer_cert,
+                                         const char *scts, apr_size_t scts_size)
+{
+    return APR_SUCCESS;
+}
+
 static const uint16_t CT_EXTENSION_TYPE = 18;
 /* Callbacks and structures for handling custom TLS Extensions:
  *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
@@ -454,16 +480,46 @@ static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
 
-    /* need to retrieve SCT from ServerHello */
+    /* need to retrieve SCT(s) from ServerHello */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "clientExtensionCallback2 called, "
                   "ext %hu was in ServerHello",
                   ext_type);
-    ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT from ServerHello",
+    ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from ServerHello",
                  in, inlen, AP_LOG_DATA_SHOW_OFFSET);
 
+    /* Note: Peer certificate is not available in this callback via
+     *       SSL_get_peer_certificate(ssl)
+     */
+
     return 1;
+}
+
+static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
+                                   X509_STORE_CTX *ctx)
+{
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "ssl_ct_ssl_proxy_verify() - get server certificate info");
+
+#if 0
+    if (!peer_cert) {
+        ap_log_cerror(APLOG_MARK, APLOG_CRIT, 0, c,
+                      "clientExtensionCallback2 called, no peer cert available!");
+        /* return fatal alert???? */
+    }
+
+    if (peer_cert) {
+        if (validate_server_data(c, peer_cert, (const char *)in, inlen) != APR_SUCCESS) {
+            /* return fatal alert???? */
+        }
+
+        save_server_data(c, peer_cert, (const char *)in, inlen);
+        X509_free(peer_cert);
+    }
+#endif
+
+    return APR_SUCCESS;
 }
 
 static int serverExtensionCallback1(SSL *ssl, unsigned short ext_type,
@@ -493,7 +549,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     ct_server_config *sconf = ap_get_module_config(c->base_server->module_config,
                                                    &ssl_ct_module);
-    X509 *x;
+    X509 *server_cert;
     char fingerprint[FINGERPRINT_SIZE];
     const unsigned char *scts;
     apr_size_t scts_len;
@@ -511,8 +567,8 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
 
     /* need to reply with SCT */
 
-    x = SSL_get_certificate(ssl);
-    get_fingerprint(x, fingerprint, sizeof fingerprint);
+    server_cert = SSL_get_certificate(ssl); /* no need to free! */
+    get_fingerprint(server_cert, fingerprint, sizeof fingerprint);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "certificate fingerprint: %s", fingerprint);
@@ -667,6 +723,8 @@ static void ct_register_hooks(apr_pool_t *p)
                      APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_new_client_pre_handshake,
                      ssl_ct_ssl_new_client_pre_handshake,
+                     NULL, NULL, APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(ssl_proxy_verify, ssl_ct_ssl_proxy_verify,
                      NULL, NULL, APR_HOOK_MIDDLE);
 }
 
