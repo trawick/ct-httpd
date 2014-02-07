@@ -522,7 +522,7 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
     return rv;
 }
 
-static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *pconf,
+static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
                                           const char *cert_fn,
                                           const char *sct_dir,
                                           apr_array_header_t *log_urls,
@@ -536,13 +536,13 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *pconf,
 
     log_elts  = (apr_uri_t *)log_urls->elts;
 
-    rv = get_cert_sct_dir(s, pconf, cert_fn, sct_dir, &cert_sct_dir);
+    rv = get_cert_sct_dir(s, p, cert_fn, sct_dir, &cert_sct_dir);
     if (rv != APR_SUCCESS) {
         return rv;
     }
 
-    if (!dir_exists(pconf, cert_sct_dir)) {
-        rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, pconf);
+    if (!dir_exists(p, cert_sct_dir)) {
+        rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, p);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                          "can't create directory %s",
@@ -552,7 +552,7 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *pconf,
     }
 
     for (i = 0; i < log_urls->nelts; i++) {
-        rv = fetch_sct(s, pconf, cert_fn,
+        rv = fetch_sct(s, p, cert_fn,
                        cert_sct_dir,
                        &log_elts[i],
                        sct_dir,
@@ -563,7 +563,7 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *pconf,
         }
     }
 
-    rv = collate_scts(s, pconf, cert_sct_dir);
+    rv = collate_scts(s, p, cert_sct_dir);
     if (rv != APR_SUCCESS) {
         return rv;
     }
