@@ -27,7 +27,6 @@
  *
  *   Ah, but the log needs to see intermediate certificates too...
  *
- * + SCTs can only be stored at startup (no daemon process to refresh them yet)
  * + Are we really sending the SCT(s) correctly?  That needs to be tested in
  *   detail.  But SSL client used by mod_proxy needs some minimal verification
  *   implemented anyway.
@@ -42,7 +41,9 @@
  *
  * + Known low-level code kludges/problems
  *   . uses system() instead of apr_proc_create(), which would allow better
- *     control of output
+ *     control of output; currently getting what appears to be bogus retcode
+ *     feedback from system() in the daemon; switch to apr_proc_create() then
+ *     debug if still necessary
  *   . no way to log CT-awareness of backend server
  *
  * + Everything else
