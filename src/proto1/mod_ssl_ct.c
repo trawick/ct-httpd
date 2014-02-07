@@ -53,13 +53,14 @@
  *
  */
 
+#include "apr_global_mutex.h"
 #include "apr_strings.h"
 
 #include "httpd.h"
 #include "http_config.h"
 #include "http_log.h"
 #include "http_protocol.h"
-#include "ap_mpm.h"
+#include "util_mutex.h"
 
 #include "ssl_hooks.h"
 
@@ -97,6 +98,10 @@ typedef struct ct_callback_info {
 } ct_callback_info;
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
+
+#define SSL_CT_MUTEX_TYPE "ssl-ct-sct-update"
+
+static apr_global_mutex_t *ssl_ct_sct_update;
 
 #define FINGERPRINT_SIZE 60
 
@@ -343,7 +348,11 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         int replacing = file_exists(p, collated_fn);
 
         if (replacing) {
-            /* XXX grab a mutex that request thread has to grab too */
+            if ((rv = apr_global_mutex_lock(ssl_ct_sct_update)) != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                             "global mutex lock failed");
+                return rv;
+            }
             apr_file_remove(collated_fn, p);
         }
         rv = apr_file_rename(tmp_collated_fn, collated_fn, p);
@@ -358,7 +367,10 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             }
         }
         if (replacing) {
-            /* XXX release mutex */
+            if ((rv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                             "global mutex unlock failed");
+            }
         }
     }
 
@@ -525,15 +537,32 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *pconf,
     return rv;
 }
 
+static apr_status_t ssl_ct_mutex_remove(void *data)
+{
+    apr_global_mutex_destroy(ssl_ct_sct_update);
+    ssl_ct_sct_update = NULL;
+    return APR_SUCCESS;
+}
+
 static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                               apr_pool_t *ptemp, server_rec *s_main)
 {
+    server_rec *s;
+    apr_status_t rv;
+
+    rv = ap_global_mutex_create(&ssl_ct_sct_update, NULL,
+                                SSL_CT_MUTEX_TYPE, NULL, s_main, pconf, 0);
+    if (rv != APR_SUCCESS) {
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    apr_pool_cleanup_register(pconf, (void *)s_main, ssl_ct_mutex_remove,
+                              apr_pool_cleanup_null);
+
     /* Ensure that we already have, or can fetch, the SCT for each certificate.  
      * If so, start the daemon to maintain these and let startup continue.
      * (Otherwise abort startup.)
      */
-
-    server_rec *s;
 
     s = s_main;
     while (s) {
@@ -614,9 +643,18 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
         return rv;
     }
 
-    /* XXX grab a mutex that daemon has to grab before replacing this file */
+    if ((rv = apr_global_mutex_lock(ssl_ct_sct_update)) != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "global mutex lock failed");
+        return rv;
+    }
+
     rv = readFile(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
-    /* XXX release mutex */
+
+    if ((rv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "global mutex unlock failed");
+    }
 
     return rv;
 }
@@ -929,6 +967,31 @@ static int ssl_ct_post_read_request(request_rec *r)
     return DECLINED;
 }
 
+static int ssl_ct_pre_config(apr_pool_t *pconf, apr_pool_t *plog,
+                             apr_pool_t *ptemp)
+{
+    apr_status_t rv = ap_mutex_register(pconf, SSL_CT_MUTEX_TYPE, NULL,
+                                        APR_LOCK_DEFAULT, 0);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    return OK;
+}
+
+static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
+{
+    apr_status_t rv;
+
+    rv = apr_global_mutex_child_init(&ssl_ct_sct_update,
+                                     apr_global_mutex_lockfile(ssl_ct_sct_update), p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "could not initialize " SSL_CT_MUTEX_TYPE
+                     " mutex in child");
+    }
+}
+
 static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
 {
     ct_server_config *conf =
@@ -960,9 +1023,11 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
 static void ct_register_hooks(apr_pool_t *p)
 {
+    ap_hook_pre_config(ssl_ct_pre_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_check_config(ssl_ct_check_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
+    ap_hook_child_init(ssl_ct_child_init, NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
                      APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
