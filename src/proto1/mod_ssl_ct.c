@@ -176,12 +176,9 @@ static apr_status_t readFile(apr_pool_t *p,
     nbytes = (apr_size_t)finfo.size;
     *contents = apr_palloc(p, nbytes);
     rv = apr_file_read_full(f, *contents, nbytes, contents_size);
-    if (rv == APR_SUCCESS) { /* shouldn't get APR_EOF since we know
+    if (rv != APR_SUCCESS) { /* shouldn't get APR_EOF since we know
                               * how big the file is
                               */
-        rv = APR_SUCCESS;
-    }
-    else {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                          "apr_file_read_full");
     }
