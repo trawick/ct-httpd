@@ -40,10 +40,6 @@
  *   . ??
  *
  * + Known low-level code kludges/problems
- *   . uses system() instead of apr_proc_create(), which would allow better
- *     control of output; currently getting what appears to be bogus retcode
- *     feedback from system() in the daemon; switch to apr_proc_create() then
- *     debug if still necessary
  *   . no way to log CT-awareness of backend server
  *
  * + Everything else
@@ -466,6 +462,116 @@ static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
     return APR_SUCCESS;
 }
 
+static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
+                               const apr_uri_t *logURL, const char *certFile,
+                               const char *sct_fn)
+{
+    apr_pollfd_t pfd = {0};
+    apr_pollset_t *pollset;
+    apr_proc_t proc = {0};
+    apr_procattr_t *attr;
+    apr_status_t rv;
+    apr_exit_why_e exitwhy;
+    const char *args[8];
+    int exitcode, fds_waiting, i;
+
+    i = 0;
+    args[i++] = ct_exe;
+    args[i++] = apr_pstrcat(p, "--ct_server=", logURL->hostinfo, NULL);
+    args[i++] = "--http_log";
+    args[i++] = "--logtostderr";
+    args[i++] = apr_pstrcat(p, "--ct_server_submission=", certFile, NULL);
+    args[i++] = apr_pstrcat(p, "--ct_server_response_out=", sct_fn, NULL);
+    args[i++] = "upload";
+    args[i++] = NULL;
+    ap_assert(i == sizeof args / sizeof args[0]);
+
+    rv = apr_procattr_create(&attr, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_create failed");
+        return rv;
+    }
+
+    rv = apr_procattr_io_set(attr,
+                             APR_NO_PIPE,
+                             APR_CHILD_BLOCK,
+                             APR_CHILD_BLOCK);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_io_set failed");
+        return rv;
+    }
+
+    rv = apr_proc_create(&proc, ct_exe, args, NULL, attr, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_proc_create failed");
+        return rv;
+    }
+
+#if APR_FILES_AS_SOCKETS
+    rv = apr_pollset_create(&pollset, 2, p, 0);
+    ap_assert(rv == APR_SUCCESS);
+
+    fds_waiting = 0;
+
+    pfd.p = p;
+    pfd.desc_type = APR_POLL_FILE;
+    pfd.reqevents = APR_POLLIN;
+    pfd.desc.f = proc.err;
+    rv = apr_pollset_add(pollset, &pfd);
+    ap_assert(rv == APR_SUCCESS);
+    ++fds_waiting;
+
+    pfd.desc.f = proc.out;
+    rv = apr_pollset_add(pollset, &pfd);
+    ap_assert(rv == APR_SUCCESS);
+    ++fds_waiting;
+
+    while (fds_waiting) {
+        int i, num_events;
+        const apr_pollfd_t *pdesc;
+        char buf[4096];
+        apr_size_t len;
+
+        rv = apr_pollset_poll(pollset, apr_time_from_sec(1),
+                              &num_events, &pdesc);
+        if (rv != APR_SUCCESS && !APR_STATUS_IS_EINTR(rv)) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "apr_pollset_poll");
+            break;
+        }
+
+        for (i = 0; i < num_events; i++) {
+            len = sizeof buf;
+            rv = apr_file_read(pdesc[i].desc.f, buf, &len);
+            if (APR_STATUS_IS_EOF(rv)) {
+                apr_file_close(pdesc[i].desc.f);
+                apr_pollset_remove(pollset, &pdesc[i]);
+                --fds_waiting;
+            }
+            else if (rv != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                             "apr_file_read");
+            }
+            else {
+                buf[len] = '\0';
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, 
+                             "output from log client: %.*s", (int)len, buf);
+            }
+        }
+    }
+#else
+#error Die zombie die!
+#endif
+
+    rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
+    rv = rv == APR_CHILD_DONE ? 0 : rv;
+
+    ap_log_error(APLOG_MARK, APLOG_INFO, rv, s,
+                 "->exit code %d  exitwhy %d", exitcode, exitwhy);
+
+    return rv;
+}
+
 static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
                               const char *certFile,
                               const char *cert_sct_dir,
@@ -474,7 +580,6 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
 {
     apr_status_t rv;
     char *sct_fn;
-    const char *submit_cmd;
     apr_finfo_t finfo;
     const char *logURL_basename;
 
@@ -509,16 +614,7 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
                      certFile, sct_fn);
     }
 
-    submit_cmd = apr_psprintf(p, "%s --ct_server=%s --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
-                              ct_exe, logURL->hostinfo, certFile, sct_fn);
-
-    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                 "Running >%s<", submit_cmd);
-                              
-    rv = system(submit_cmd);
-
-    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                 "->%d", rv);
+    rv = submission(s, p, ct_exe, logURL, certFile, sct_fn);
 
     return rv;
 }
