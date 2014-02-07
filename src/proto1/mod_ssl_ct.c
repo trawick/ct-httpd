@@ -115,6 +115,8 @@ module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
 static apr_global_mutex_t *ssl_ct_sct_update;
 
+static int refresh_all_scts(server_rec *s_main, apr_pool_t *p);
+
 #ifdef HAVE_SCT_DAEMON
 
 /* The APR other-child API doesn't tell us how the daemon exited
@@ -632,6 +634,7 @@ static void daemon_maint(int reason, void *data, apr_wait_t status)
 static int sct_daemon(server_rec *s_main)
 {
     apr_status_t rv;
+    apr_pool_t *ptemp;
 
     apr_signal(SIGCHLD, SIG_IGN);
     apr_signal(SIGHUP, daemon_signal_handler);
@@ -641,14 +644,23 @@ static int sct_daemon(server_rec *s_main)
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, root_server,
                      "could not initialize " SSL_CT_MUTEX_TYPE
-                     " mutex in daemon");
+                     " mutex in SCT maintenance daemon");
         return DAEMON_STARTUP_ERROR;
     }
 
+    /* ptemp - temporary pool for refresh cycles */
+    apr_pool_create(&ptemp, pdaemon);
+
     while (!daemon_should_exit) {
+        apr_sleep(apr_time_from_sec(30));
+
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                     "sct_daemon - doing nothing");
-        apr_sleep(apr_time_from_sec(2));
+                     "SCT maintenance daemon - refreshing SCTs as needed");
+        rv = refresh_all_scts(s_main, ptemp);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                         "SCT maintenance daemon - SCT refresh failed; will try again later");
+        }
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
@@ -690,10 +702,40 @@ static apr_status_t ssl_ct_mutex_remove(void *data)
     return APR_SUCCESS;
 }
 
+static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
+{
+    apr_status_t rv;
+    server_rec *s;
+
+    s = s_main;
+    while (s) {
+        ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                       &ssl_ct_module);
+        int i;
+        const char **cert_elts;
+ 
+        if (sconf && sconf->cert_files) {
+            cert_elts = (const char **)sconf->cert_files->elts;
+            for (i = 0; i < sconf->cert_files->nelts; i++) {
+                rv = refresh_scts_for_cert(s_main, p, cert_elts[i],
+                                           sconf->sct_storage, sconf->log_urls,
+                                           sconf->ct_exe,
+                                           sconf->max_sct_age);
+                if (rv != APR_SUCCESS) {
+                    return rv;
+                }
+            }
+        }
+
+        s = s->next;
+    }
+
+    return rv;
+}
+
 static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                               apr_pool_t *ptemp, server_rec *s_main)
 {
-    server_rec *s;
     apr_status_t rv;
 
 #ifdef HAVE_SCT_DAEMON
@@ -726,34 +768,14 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     apr_pool_cleanup_register(pconf, (void *)s_main, ssl_ct_mutex_remove,
                               apr_pool_cleanup_null);
 
-    /* Ensure that we already have, or can fetch, the SCT for each certificate.  
-     * If so, start the daemon to maintain these and let startup continue.
-     * (Otherwise abort startup.)
+    /* Ensure that we already have, or can fetch, fresh SCTs for each 
+     * certificate.  If so, start the daemon to maintain these and let
+     * startup continue.  (Otherwise abort startup.)
      */
 
-    s = s_main;
-    while (s) {
-        ct_server_config *sconf = ap_get_module_config(s->module_config,
-                                                       &ssl_ct_module);
-        int i;
-        apr_status_t rv;
-        const char **cert_elts;
- 
-        if (sconf && sconf->cert_files) {
-            cert_elts = (const char **)sconf->cert_files->elts;
-            for (i = 0; i < sconf->cert_files->nelts; i++) {
-                rv = refresh_scts_for_cert(s_main, pconf, cert_elts[i],
-                                           sconf->sct_storage, sconf->log_urls,
-                                           sconf->ct_exe,
-                                           sconf->max_sct_age);
-                if (rv != APR_SUCCESS) {
-                    return HTTP_INTERNAL_SERVER_ERROR;
-                }
-            }
-
-        }
-
-        s = s->next;
+    rv = refresh_all_scts(s_main, pconf);
+    if (rv != APR_SUCCESS) {
+        return HTTP_INTERNAL_SERVER_ERROR;
     }
 
 #ifdef HAVE_SCT_DAEMON
