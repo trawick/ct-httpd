@@ -39,7 +39,10 @@ Supporting TLS communication from a client to a server (possibly upgraded after 
   * Processing should fail at the earliest point practical if this requirement is not met, which may be at the time of server startup or during the handshake. 
     * The server can check for the extension in the certificate or the TLS extension in foo.pem at startup. 
     * The earliest (practical) point that the OCSP stapling response may be examined will vary according to the server implementation. 
-    * Does the SCT-available status need to be stored in the session cache?  No, validation will occur on the initial handshake. 
+    * Does the SCT-available status need to be stored in the session cache?  No, validation will occur on the initial handshake.
+      >SCTs embedded in the certificate won't be sent for resumption handshakes of course. 
+      >The TLS extension will be sent in the same cases as SCTs embedded in the certificate.
+      >(And the TLS extension doesn't need the CA to do anything.)  (from Adam Langley)
 * The server will perform basic sanity checking on all SCTs at the earliest point practical if a check fails, since the administrator can diagnose a configuration problem much more easily when the server software identifies the issue. 
 * The server will represent the source(s) of SCT in SSL variable SSL_SCT_SOURCES; this will be a comma-delimited list of source types, with these types represented by “certext” (certificate extension), “tlsextfile” (TLS extension in ServerInfoFile), and “ocsp” (part of OCSP stapling response).
  * In the event that the client is *unaware*, SSL_SCT_SOURCES will be set to "none".

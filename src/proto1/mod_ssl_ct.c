@@ -49,9 +49,7 @@
  *   . ??
  *
  * + Stuff to remember, or note elsewhere:
- *   . "SCTs embedded in the certificate won't be sent for resumption handshakes of course. 
- *     The TLS extension will be sent in the same cases as SCTs embedded in the certificate.
- *     (And the TLS extension doesn't need the CA to do anything.)"  (Adam Langley)
+ *   .
  *
  */
 
