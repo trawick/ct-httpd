@@ -33,6 +33,9 @@
  *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
  *   that facilitates the auditing support in the c-t tools.
+ * + Proxy should have a setting that aborts when the backend doesn't send
+ *   an SCT.  (It must recognize when one is delivered with the certificate
+ *   or via OCSP stapling.)
  *
  * + Configuration kludges
  *   . ??
