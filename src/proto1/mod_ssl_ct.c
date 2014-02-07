@@ -441,7 +441,7 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    rv = apr_stat(&finfo, sct_fn, APR_FINFO_MIN, p);
+    rv = apr_stat(&finfo, sct_fn, APR_FINFO_MTIME, p);
     if (rv == APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                      "Found SCT for %s in %s",
