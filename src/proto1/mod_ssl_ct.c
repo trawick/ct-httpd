@@ -333,13 +333,25 @@ static apr_status_t collate_scts(server_rec *s_main, apr_pool_t *p,
     apr_dir_close(d);
 
     if (rv == APR_SUCCESS) {
-        /* XXX grab a mutex that request thread has to grab too */
-        apr_file_remove(collated_fn, p);
+        int replacing = file_exists(p, collated_fn);
+
+        if (replacing) {
+            /* XXX grab a mutex that request thread has to grab too */
+            apr_file_remove(collated_fn, p);
+        }
         rv = apr_file_rename(tmp_collated_fn, collated_fn, p);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
                          "couldn't rename %s to %s",
                          tmp_collated_fn, collated_fn);
+            if (replacing) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                             "continuing to use existing file %s",
+                             collated_fn);
+            }
+        }
+        if (replacing) {
+            /* XXX release mutex */
         }
     }
 
@@ -565,7 +577,9 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
         return rv;
     }
 
+    /* XXX grab a mutex that daemon has to grab before replacing this file */
     rv = readFile(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
+    /* XXX release mutex */
 
     return rv;
 }
