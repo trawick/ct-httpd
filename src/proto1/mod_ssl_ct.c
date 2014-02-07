@@ -28,7 +28,7 @@
  *   Ah, but the log needs to see intermediate certificates too...
  *
  * + Are we really sending the SCT(s) correctly?  That needs to be tested in
- *   detail.  But SSL client used by mod_proxy needs some minimal verification
+ *   detail.  But the TLS client used by mod_proxy needs some minimal verification
  *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
  *   that facilitates the auditing support in the c-t tools.
