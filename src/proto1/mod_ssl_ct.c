@@ -346,9 +346,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             break;
         }
 
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                     "sct file %s",
-                     cur_sct_file);
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                     "Adding SCT from file %s", finfo.name);
 
         rv = readFile(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
         if (rv != APR_SUCCESS) {
@@ -609,7 +608,10 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
         }
     }
     else {
-        ap_log_error(APLOG_MARK, APLOG_INFO, rv, s,
+        ap_log_error(APLOG_MARK, APLOG_INFO,
+                     /* no need to print error string for file-not-found err */
+                     APR_STATUS_IS_ENOENT(rv) ? 0 : rv,
+                     s,
                      "Did not find SCT for %s in %s, must fetch",
                      certFile, sct_fn);
     }
@@ -1207,9 +1209,6 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
     ct_callback_info *cbi = apr_pcalloc(p, sizeof *cbi);
 
     cbi->s = s;
-
-    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "ssl_init_ctx; proxy? %s",
-                 is_proxy ? "yes" : "no");
 
     if (is_proxy) {
         /* _cli_ = "client"
