@@ -53,14 +53,26 @@
  *
  */
 
+#if !defined(WIN32)
+#define HAVE_SCT_DAEMON
+#endif
+
+#if !defined(WIN32) && defined(HAVE_SCT_DAEMON)
+#include <unistd.h>
+#endif
+
 #include "apr_global_mutex.h"
+#include "apr_signal.h"
 #include "apr_strings.h"
 
 #include "httpd.h"
 #include "http_config.h"
+#include "http_core.h"
 #include "http_log.h"
+#include "http_main.h"
 #include "http_protocol.h"
 #include "util_mutex.h"
+#include "ap_mpm.h"
 
 #include "ssl_hooks.h"
 
@@ -102,6 +114,26 @@ module AP_MODULE_DECLARE_DATA ssl_ct_module;
 #define SSL_CT_MUTEX_TYPE "ssl-ct-sct-update"
 
 static apr_global_mutex_t *ssl_ct_sct_update;
+
+#ifdef HAVE_SCT_DAEMON
+
+/* The APR other-child API doesn't tell us how the daemon exited
+ * (SIGSEGV vs. exit(1)).  The other-child maintenance function
+ * needs to decide whether to restart the daemon after a failure
+ * based on whether or not it exited due to a fatal startup error
+ * or something that happened at steady-state.  This exit status
+ * is unlikely to collide with exit signals.
+ */
+#define DAEMON_STARTUP_ERROR 254
+
+static int daemon_start(apr_pool_t *p, server_rec *main_server, apr_proc_t *procnew);
+static server_rec *root_server = NULL;
+static apr_pool_t *root_pool = NULL;
+static apr_pool_t *pdaemon = NULL;
+static pid_t daemon_pid;
+static int daemon_should_exit = 0;
+
+#endif /* HAVE_SCT_DAEMON */
 
 #define FINGERPRINT_SIZE 60
 
@@ -537,6 +569,120 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *pconf,
     return rv;
 }
 
+#ifdef HAVE_SCT_DAEMON
+
+static void daemon_signal_handler(int sig)
+{
+    if (sig == SIGHUP) {
+        ++daemon_should_exit;
+    }
+}
+
+#if APR_HAS_OTHER_CHILD
+static void daemon_maint(int reason, void *data, apr_wait_t status)
+{
+    apr_proc_t *proc = data;
+    int mpm_state;
+    int stopping;
+
+    switch (reason) {
+        case APR_OC_REASON_DEATH:
+            apr_proc_other_child_unregister(data);
+            /* If apache is not terminating or restarting,
+             * restart the daemon
+             */
+            stopping = 1; /* if MPM doesn't support query,
+                           * assume we shouldn't restart daemon
+                           */
+            if (ap_mpm_query(AP_MPMQ_MPM_STATE, &mpm_state) == APR_SUCCESS &&
+                mpm_state != AP_MPMQ_STOPPING) {
+                stopping = 0;
+            }
+            if (!stopping) {
+                if (status == DAEMON_STARTUP_ERROR) {
+                    ap_log_error(APLOG_MARK, APLOG_CRIT, 0, ap_server_conf, APLOGNO(01238)
+                                 "SCT maintenance daemon failed to initialize");
+                }
+                else {
+                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf, APLOGNO(01239)
+                                 "SCT maintenance daemon process died, restarting");
+                    daemon_start(root_pool, root_server, proc);
+                }
+            }
+            break;
+        case APR_OC_REASON_RESTART:
+            /* don't do anything; server is stopping or restarting */
+            apr_proc_other_child_unregister(data);
+            break;
+        case APR_OC_REASON_LOST:
+            /* Restart the child cgid daemon process */
+            apr_proc_other_child_unregister(data);
+            daemon_start(root_pool, root_server, proc);
+            break;
+        case APR_OC_REASON_UNREGISTER:
+            /* we get here when pcgi is cleaned up; pcgi gets cleaned
+             * up when pconf gets cleaned up
+             */
+            kill(proc->pid, SIGHUP); /* send signal to daemon telling it to die */
+            break;
+    }
+}
+#endif
+
+static int sct_daemon(server_rec *s_main)
+{
+    apr_status_t rv;
+
+    apr_signal(SIGCHLD, SIG_IGN);
+    apr_signal(SIGHUP, daemon_signal_handler);
+
+    rv = apr_global_mutex_child_init(&ssl_ct_sct_update,
+                                     apr_global_mutex_lockfile(ssl_ct_sct_update), pdaemon);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, root_server,
+                     "could not initialize " SSL_CT_MUTEX_TYPE
+                     " mutex in daemon");
+        return DAEMON_STARTUP_ERROR;
+    }
+
+    while (!daemon_should_exit) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                     "sct_daemon - doing nothing");
+        apr_sleep(apr_time_from_sec(2));
+    }
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                 "sct_daemon - exiting");
+
+    return 0;
+}
+
+static int daemon_start(apr_pool_t *p, server_rec *main_server,
+                        apr_proc_t *procnew)
+{
+    daemon_should_exit = 0; /* clear setting from previous generation */
+    if ((daemon_pid = fork()) < 0) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, errno, main_server,
+                     "Couldn't spawn SCT maintenance daemon process");
+        return DECLINED;
+    }
+    else if (daemon_pid == 0) {
+        if (pdaemon == NULL) {
+            apr_pool_create(&pdaemon, p);
+        }
+        exit(sct_daemon(main_server) > 0 ? DAEMON_STARTUP_ERROR : -1);
+    }
+    procnew->pid = daemon_pid;
+    procnew->err = procnew->in = procnew->out = NULL;
+    apr_pool_note_subprocess(p, procnew, APR_KILL_AFTER_TIMEOUT);
+#if APR_HAS_OTHER_CHILD
+    apr_proc_other_child_register(procnew, daemon_maint, procnew, NULL, p);
+#endif
+    return OK;
+}
+
+#endif /* HAVE_SCT_DAEMON */
+
 static apr_status_t ssl_ct_mutex_remove(void *data)
 {
     apr_global_mutex_destroy(ssl_ct_sct_update);
@@ -549,6 +695,27 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 {
     server_rec *s;
     apr_status_t rv;
+
+#ifdef HAVE_SCT_DAEMON
+    apr_proc_t *procnew = NULL;
+    const char *userdata_key = "sct_daemon_init";
+    void *data;
+
+    root_server = s_main;
+    root_pool = pconf;
+
+    apr_pool_userdata_get(&data, userdata_key, s_main->process->pool);
+    if (!data) {
+        procnew = apr_pcalloc(s_main->process->pool, sizeof(*procnew));
+        procnew->pid = -1;
+        procnew->err = procnew->in = procnew->out = NULL;
+        apr_pool_userdata_set((const void *)procnew, userdata_key,
+                              apr_pool_cleanup_null, s_main->process->pool);
+    }
+    else {
+        procnew = data;
+    }
+#endif /* HAVE_SCT_DAEMON */
 
     rv = ap_global_mutex_create(&ssl_ct_sct_update, NULL,
                                 SSL_CT_MUTEX_TYPE, NULL, s_main, pconf, 0);
@@ -588,6 +755,15 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 
         s = s->next;
     }
+
+#ifdef HAVE_SCT_DAEMON
+    if (ap_state_query(AP_SQ_MAIN_STATE) != AP_SQ_MS_CREATE_PRE_CONFIG) {
+        int ret = daemon_start(pconf, s_main, procnew);
+        if (ret != OK) {
+            return ret;
+        }
+    }
+#endif /* HAVE_SCT_DAEMON */
 
     return OK;
 }
