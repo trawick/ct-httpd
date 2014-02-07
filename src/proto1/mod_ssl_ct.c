@@ -83,6 +83,7 @@ typedef struct ct_server_config {
     const char *sct_storage;
     const char *ct_tools_dir;
     const char *ct_exe;
+    apr_time_t max_sct_age;
 } ct_server_config;
 
 typedef struct ct_conn_config {
@@ -263,6 +264,12 @@ static apr_status_t collate_scts(server_rec *s_main, apr_pool_t *p,
         return rv;
     }
 
+    /* Note: We rebuild the file that combines the SCTs every time this
+     *       code runs, even if no individual SCTs are new (or at least
+     *       re-fetched).
+     *       That allows the admin to see the last processing by looking
+     *       at the timestamp.
+     */
     tmp_collated_fn = apr_pstrcat(p, collated_fn, ".tmp", NULL);
 
     rv = apr_file_open(&tmpfile, tmp_collated_fn,
@@ -412,11 +419,11 @@ static apr_status_t get_cert_sct_dir(server_rec *s_main, apr_pool_t *p,
     return APR_SUCCESS;
 }
 
-static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
-                            const char *certFile,
-                            const char *cert_sct_dir,
-                            const apr_uri_t *logURL, const char *sct_dir,
-                            const char *ct_exe)
+static apr_status_t fetch_sct(server_rec *s_main, apr_pool_t *p,
+                              const char *certFile,
+                              const char *cert_sct_dir,
+                              const apr_uri_t *logURL, const char *sct_dir,
+                              const char *ct_exe, apr_time_t max_sct_age)
 {
     apr_status_t rv;
     char *sct_fn;
@@ -439,12 +446,21 @@ static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
                      "Found SCT for %s in %s",
                      certFile, sct_fn);
-        return rv;
-    }
 
-    ap_log_error(APLOG_MARK, APLOG_INFO, rv, s_main,
-                 "Did not find SCT for %s in %s, must fetch",
-                 certFile, sct_fn);
+        if (finfo.mtime + max_sct_age < apr_time_now()) {
+            ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                         "Older than %d seconds, must refresh",
+                         (int)(apr_time_sec(max_sct_age)));
+        }
+        else {
+            return APR_SUCCESS;
+        }
+    }
+    else {
+        ap_log_error(APLOG_MARK, APLOG_INFO, rv, s_main,
+                     "Did not find SCT for %s in %s, must fetch",
+                     certFile, sct_fn);
+    }
 
     submit_cmd = apr_psprintf(p, "%s --ct_server=%s --http_log --logtostderr --ct_server_submission=%s --ct_server_response_out=%s upload",
                               ct_exe, logURL->hostinfo, certFile, sct_fn);
@@ -456,6 +472,55 @@ static apr_status_t get_sct(server_rec *s_main, apr_pool_t *p,
 
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
                  "->%d", rv);
+
+    return rv;
+}
+
+static apr_status_t refresh_scts_for_cert(server_rec *s_main, apr_pool_t *pconf,
+                                          const char *cert_fn,
+                                          const char *sct_dir,
+                                          apr_array_header_t *log_urls,
+                                          const char *ct_exe,
+                                          apr_time_t max_sct_age)
+{
+    apr_status_t rv;
+    apr_uri_t *log_elts;
+    char *cert_sct_dir;
+    int i;
+
+    log_elts  = (apr_uri_t *)log_urls->elts;
+
+    rv = get_cert_sct_dir(s_main, pconf, cert_fn, sct_dir, &cert_sct_dir);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    if (!dir_exists(pconf, cert_sct_dir)) {
+        rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, pconf);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                         "can't create directory %s",
+                         cert_sct_dir);
+            return rv;
+        }
+    }
+
+    for (i = 0; i < log_urls->nelts; i++) {
+        rv = fetch_sct(s_main, pconf, cert_fn,
+                       cert_sct_dir,
+                       &log_elts[i],
+                       sct_dir,
+                       ct_exe,
+                       max_sct_age);
+        if (rv != APR_SUCCESS) {
+            return rv;
+        }
+    }
+
+    rv = collate_scts(s_main, pconf, cert_sct_dir);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
 
     return rv;
 }
@@ -474,45 +539,17 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     while (s) {
         ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                        &ssl_ct_module);
-        int i, j;
+        int i;
         apr_status_t rv;
         const char **cert_elts;
-        apr_uri_t *log_elts;
-        char *cert_sct_dir;
-
+ 
         if (sconf && sconf->cert_files) {
-
             cert_elts = (const char **)sconf->cert_files->elts;
-            log_elts  = (apr_uri_t *)sconf->log_urls->elts;
             for (i = 0; i < sconf->cert_files->nelts; i++) {
-
-                rv = get_cert_sct_dir(s_main, pconf, cert_elts[i],
-                                      sconf->sct_storage, &cert_sct_dir);
-                if (rv != APR_SUCCESS) {
-                        return HTTP_INTERNAL_SERVER_ERROR;
-                }
-
-                if (!dir_exists(pconf, cert_sct_dir)) {
-                    rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, pconf);
-                    if (rv != APR_SUCCESS) {
-                        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
-                                     "can't create directory %s",
-                                     cert_sct_dir);
-                        return HTTP_INTERNAL_SERVER_ERROR;
-                    }
-                }
-
-                for (j = 0; j < sconf->log_urls->nelts; j++) {
-                    rv = get_sct(s_main, pconf, cert_elts[i],
-                                 cert_sct_dir,
-                                 &log_elts[j],
-                                 sconf->sct_storage,
-                                 sconf->ct_exe);
-                    if (rv != APR_SUCCESS) {
-                        return HTTP_INTERNAL_SERVER_ERROR;
-                    }
-                }
-                rv = collate_scts(s_main, pconf, cert_sct_dir);
+                rv = refresh_scts_for_cert(s_main, pconf, cert_elts[i],
+                                           sconf->sct_storage, sconf->log_urls,
+                                           sconf->ct_exe,
+                                           sconf->max_sct_age);
                 if (rv != APR_SUCCESS) {
                     return HTTP_INTERNAL_SERVER_ERROR;
                 }
@@ -896,6 +933,8 @@ static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
 {
     ct_server_config *conf =
         (ct_server_config *)apr_pcalloc(p, sizeof(ct_server_config));
+
+    conf->max_sct_age = apr_time_from_sec(3600);
     
     return conf;
 }
@@ -914,6 +953,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
     conf->sct_storage = base->sct_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
+    conf->max_sct_age = base->max_sct_age;
 
     return conf;
 }
@@ -1048,6 +1088,32 @@ static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+    long val;
+    char *endptr;
+
+    if (err) {
+        return err;
+    }
+
+    errno = 0;
+    val = strtol(arg, &endptr, 10);
+    if (errno != 0
+        || *endptr != '\0'
+        || val < 10
+        || val > 3600 * 12) {
+        return apr_psprintf(cmd->pool, "CTMaxSCTAge must be between 10 seconds "
+                            "and 12 hours worth of seconds (%d)",
+                            3600 * 12);
+    }
+    sconf->max_sct_age = apr_time_from_sec(val);
+    return NULL;
+}    
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
@@ -1056,6 +1122,8 @@ static const command_rec ct_cmds[] =
                   "Location to store SCTs obtained from logs"),
     AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
                   "Location of certificate-transparency.org tools"),
+    AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
+                  "Max age of SCT obtained from log before refresh"),
     {NULL}
 };
 
