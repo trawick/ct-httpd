@@ -114,6 +114,8 @@ static apr_global_mutex_t *ssl_ct_sct_update;
 
 static int refresh_all_scts(server_rec *s_main, apr_pool_t *p);
 
+static apr_thread_t *service_thread;
+
 #ifdef HAVE_SCT_DAEMON
 
 /* The APR other-child API doesn't tell us how the daemon exited
@@ -667,6 +669,39 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
     }
 
     return rv;
+}
+
+static void *run_service_thread(apr_thread_t *me, void *data)
+{
+    server_rec *s = data;
+    int mpmq_s;
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                 "In service thread");
+
+    while (1) {
+        if (ap_mpm_query(AP_MPMQ_MPM_STATE, &mpmq_s) != APR_SUCCESS) {
+            break;
+        }
+        if (mpmq_s == AP_MPMQ_STOPPING) {
+            break;
+        }
+        apr_sleep(apr_time_from_sec(1));
+    }
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                 "Exiting service thread");
+
+    return NULL;
+}
+
+static apr_status_t wait_for_service_thread(void *data)
+{
+    apr_thread_t *thd = data;
+    apr_status_t retval;
+
+    apr_thread_join(&retval, thd);
+    return APR_SUCCESS;
 }
 
 #ifdef HAVE_SCT_DAEMON
@@ -1282,7 +1317,18 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
                      "could not initialize " SSL_CT_MUTEX_TYPE
                      " mutex in child");
+        return;
     }
+
+    rv = apr_thread_create(&service_thread, NULL, run_service_thread, s, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "could not create service thread in child");
+        return;
+    }
+
+    apr_pool_cleanup_register(p, service_thread, wait_for_service_thread,
+                              apr_pool_cleanup_null);
 }
 
 static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
