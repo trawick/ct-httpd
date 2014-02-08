@@ -26,8 +26,8 @@
  *   See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
  *
  *   Ah, but the log needs to see intermediate certificates too...
- *
- * + Are we really sending the SCT(s) correctly?  That needs to be tested in
+ * 
+dr* + Are we really sending the SCT(s) correctly?  That needs to be tested in
  *   detail.  But the TLS client used by mod_proxy needs some minimal verification
  *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
@@ -693,12 +693,13 @@ static void *run_service_thread(apr_thread_t *me, void *data)
 {
     server_rec *s = data;
     int mpmq_s;
+    apr_status_t rv;
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                  SERVICE_THREAD_NAME " started");
 
     while (1) {
-        if (ap_mpm_query(AP_MPMQ_MPM_STATE, &mpmq_s) != APR_SUCCESS) {
+        if ((rv = ap_mpm_query(AP_MPMQ_MPM_STATE, &mpmq_s)) != APR_SUCCESS) {
             break;
         }
         if (mpmq_s == AP_MPMQ_STOPPING) {
@@ -707,7 +708,7 @@ static void *run_service_thread(apr_thread_t *me, void *data)
         apr_sleep(apr_time_from_sec(1));
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, rv, s,
                  SERVICE_THREAD_NAME " exiting");
 
     return NULL;
