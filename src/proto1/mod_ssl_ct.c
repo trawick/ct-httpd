@@ -81,6 +81,9 @@
 
 #define STATUS_VAR "SSL_CT_PEER_STATUS"
 
+#define DAEMON_NAME         "SCT maintenance daemon"
+#define SERVICE_THREAD_NAME "service thread"
+
 /** A certificate file larger than this is suspect */
 #define MAX_CERT_FILE_SIZE 30000 /* eventually this can include intermediate certs */
 
@@ -677,7 +680,7 @@ static void *run_service_thread(apr_thread_t *me, void *data)
     int mpmq_s;
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                 "In service thread");
+                 SERVICE_THREAD_NAME " started");
 
     while (1) {
         if (ap_mpm_query(AP_MPMQ_MPM_STATE, &mpmq_s) != APR_SUCCESS) {
@@ -690,7 +693,7 @@ static void *run_service_thread(apr_thread_t *me, void *data)
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                 "Exiting service thread");
+                 SERVICE_THREAD_NAME " exiting");
 
     return NULL;
 }
@@ -736,11 +739,11 @@ static void daemon_maint(int reason, void *data, apr_wait_t status)
             if (!stopping) {
                 if (status == DAEMON_STARTUP_ERROR) {
                     ap_log_error(APLOG_MARK, APLOG_CRIT, 0, ap_server_conf, APLOGNO(01238)
-                                 "SCT maintenance daemon failed to initialize");
+                                 DAEMON_NAME " failed to initialize");
                 }
                 else {
                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf, APLOGNO(01239)
-                                 "SCT maintenance daemon process died, restarting");
+                                 DAEMON_NAME " process died, restarting");
                     daemon_start(root_pool, root_server, proc);
                 }
             }
@@ -777,7 +780,7 @@ static int sct_daemon(server_rec *s_main)
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, root_server,
                      "could not initialize " SSL_CT_MUTEX_TYPE
-                     " mutex in SCT maintenance daemon");
+                     " mutex in " DAEMON_NAME);
         return DAEMON_STARTUP_ERROR;
     }
 
@@ -788,16 +791,16 @@ static int sct_daemon(server_rec *s_main)
         apr_sleep(apr_time_from_sec(30));
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                     "SCT maintenance daemon - refreshing SCTs as needed");
+                     DAEMON_NAME " - refreshing SCTs as needed");
         rv = refresh_all_scts(s_main, ptemp);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
-                         "SCT maintenance daemon - SCT refresh failed; will try again later");
+                         DAEMON_NAME " - SCT refresh failed; will try again later");
         }
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                 "sct_daemon - exiting");
+                 DAEMON_NAME " - exiting");
 
     return 0;
 }
@@ -808,7 +811,7 @@ static int daemon_start(apr_pool_t *p, server_rec *main_server,
     daemon_should_exit = 0; /* clear setting from previous generation */
     if ((daemon_pid = fork()) < 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, errno, main_server,
-                     "Couldn't spawn SCT maintenance daemon process");
+                     "Couldn't create " DAEMON_NAME " process");
         return DECLINED;
     }
     else if (daemon_pid == 0) {
@@ -1323,7 +1326,7 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
     rv = apr_thread_create(&service_thread, NULL, run_service_thread, s, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                     "could not create service thread in child");
+                     "could not create " SERVICE_THREAD_NAME " in child");
         return;
     }
 
