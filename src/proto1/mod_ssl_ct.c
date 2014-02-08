@@ -552,14 +552,13 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
                              "apr_file_read");
             }
             else {
-                buf[len] = '\0';
                 ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, 
                              "output from log client: %.*s", (int)len, buf);
             }
         }
     }
 #else
-#error Die zombie die!
+#error Die zombie die!  (Implement a different type of I/O loop for Windows.)
 #endif
 
     rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
