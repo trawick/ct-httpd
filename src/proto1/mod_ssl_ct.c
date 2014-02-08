@@ -40,7 +40,10 @@
  *   . ??
  *
  * + Known low-level code kludges/problems
- *   . no way to log CT-awareness of backend server
+ *   . no way to log CT-awareness of backend server (put it in configurable response
+ *     header to allow logging or easy testing from client)
+ *   . no way to automatically get rid of stored sct for log which is no
+ *     longer used/respected
  *
  * + Everything else
  *   . ??
@@ -52,6 +55,10 @@
 
 #if !defined(WIN32)
 #define HAVE_SCT_DAEMON
+#else
+/* SCTs from logs or from admin-created .sct files are only picked up
+ * at server start/restart.
+ */
 #endif
 
 #if !defined(WIN32) && defined(HAVE_SCT_DAEMON)
@@ -79,7 +86,7 @@
 #define DOTEXE ""
 #endif
 
-#define STATUS_VAR "SSL_CT_PEER_STATUS"
+#define STATUS_VAR          "SSL_CT_PEER_STATUS"
 
 #define DAEMON_NAME         "SCT maintenance daemon"
 #define SERVICE_THREAD_NAME "service thread"
@@ -87,8 +94,10 @@
 /** A certificate file larger than this is suspect */
 #define MAX_CERT_FILE_SIZE 30000 /* eventually this can include intermediate certs */
 
-/** Limit on size of stored SCTs for a certificate */
-#define MAX_SCTS_SIZE 2000
+/** Limit on size of stored SCTs for a certificate (individual SCTs as well
+ * as size of all.
+ */
+#define MAX_SCTS_SIZE 10000
 
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
@@ -275,6 +284,7 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
 }
 
 /* SCT storage on disk:
+ *
  *   <rootdir>/<fingerprint>/hostname_port_uri.sct   SCT for cert with this fingerprint
  *                                                   from this log (could be any number
  *                                                   of these)
@@ -284,6 +294,8 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
  *   <rootdir>/<fingerprint>/collated                one or more SCTs ready to send
  *                                                   (this is all that the web server
  *                                                   processes care about)
+ *
+ * Bug: no automatic way to get rid of .sct files from logs we no longer respect
  */
 
 #define COLLATED_SCTS_BASENAME "collated"
@@ -563,7 +575,10 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
         }
     }
 #else
-#error Die zombie die!  (Implement a different type of I/O loop for Windows.)
+#error Implement a different type of I/O loop for Windows.
+    /* See mod_ext_filter for code for !APR_FILES_AS_SOCKETS which
+     * services two pipes using a timeout and non-blocking handles.
+     */
 #endif
 
     rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
@@ -952,7 +967,7 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
                               server_rec *s,
                               char **scts, apr_size_t *scts_len)
 {
-    apr_status_t rv;
+    apr_status_t rv, tmprv;
     char *cert_dir, *sct_fn;
 
     rv = apr_filepath_merge(&cert_dir, sct_dir, fingerprint, 0, p);
@@ -985,8 +1000,8 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
 
     rv = readFile(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
 
-    if ((rv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+    if ((tmprv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, tmprv, s,
                      "global mutex unlock failed");
     }
 
@@ -1068,7 +1083,9 @@ static apr_status_t validate_server_data(conn_rec *c, const X509 *peer_cert,
     return APR_SUCCESS;
 }
 
-static const uint16_t CT_EXTENSION_TYPE = 18;
+/* signed_certificate_timestamp */
+static const unsigned short CT_EXTENSION_TYPE = 18;
+
 /* Callbacks and structures for handling custom TLS Extensions:
  *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
  *   cli_ext_second_cb - receives data from ServerHello TLS Extension
@@ -1095,7 +1112,7 @@ static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
 
-    /* need to retrieve SCT(s) from ServerHello */
+    /* need to retrieve SCT(s) from ServerHello (or certificate or stapled response) */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "clientExtensionCallback2 called, "
