@@ -168,8 +168,6 @@ static const char *get_cert_fingerprint(apr_pool_t *p, X509 *x)
     digest = EVP_get_digestbyname("sha1");
     X509_digest(x, digest, md, &n);
 
-    ap_assert(n == 20);
-
     return apr_pescape_hex(p, md, n, 0);
 }
 
