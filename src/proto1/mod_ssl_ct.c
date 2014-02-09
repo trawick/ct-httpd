@@ -65,6 +65,12 @@
 #include <unistd.h>
 #endif
 
+#include "apr_version.h"
+#if !APR_VERSION_AT_LEAST(1,5,0)
+#error mod_ssl_ct requires APR 1.5.0 or later!
+#endif
+
+#include "apr_escape.h"
 #include "apr_global_mutex.h"
 #include "apr_lib.h"
 #include "apr_signal.h"
@@ -154,26 +160,17 @@ static int daemon_should_exit = 0;
 
 #endif /* HAVE_SCT_DAEMON */
 
-#define FINGERPRINT_SIZE 60
-
-static void get_fingerprint(X509 *x, char *fingerprint, size_t fpsize)
+static const char *get_cert_fingerprint(apr_pool_t *p, X509 *x)
 {
     const EVP_MD *digest;
     unsigned char md[EVP_MAX_MD_SIZE];
-    int i;
     unsigned int n;
     digest = EVP_get_digestbyname("sha1");
     X509_digest(x, digest, md, &n);
 
     ap_assert(n == 20);
-    ap_assert(fpsize >= FINGERPRINT_SIZE);
 
-    i = 0;
-    while (i < n - 1) {
-        apr_snprintf(fingerprint + i * 3, 4, "%02X:", md[i]);
-        i++;
-    }
-    apr_snprintf(fingerprint + i * 3, 3, "%02X", md[i]);
+    return apr_pescape_hex(p, md, n, 0);
 }
 
 static int dir_exists(apr_pool_t *p, const char *dirname)
@@ -338,8 +335,7 @@ static apr_status_t readLeafCertificate(server_rec *s,
 static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
                                                    apr_pool_t *p,
                                                    const char *certFile,
-                                                   char *fingerprint,
-                                                   size_t fingerprint_size)
+                                                   const char **fingerprint)
 {
     apr_status_t rv;
     BIO *bio;
@@ -355,7 +351,7 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
         ap_assert(bio);
         x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
         ap_assert(x);
-        get_fingerprint(x, fingerprint, fingerprint_size);
+        *fingerprint = get_cert_fingerprint(p, x);
     }
 
     return rv;
@@ -537,13 +533,12 @@ static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
                                      char **cert_sct_dir_out)
 {
     apr_status_t rv;
-    char fingerprint[FINGERPRINT_SIZE];
+    const char *fingerprint;
     char *cert_sct_dir;
 
     *cert_sct_dir_out = NULL;
 
-    rv = get_cert_fingerprint_from_file(s, p, certFile, fingerprint,
-                                        sizeof fingerprint);
+    rv = get_cert_fingerprint_from_file(s, p, certFile, &fingerprint);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                      "failed to get certificate fingerprint from %s",
@@ -1470,7 +1465,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
     ct_server_config *sconf = ap_get_module_config(c->base_server->module_config,
                                                    &ssl_ct_module);
     X509 *server_cert;
-    char fingerprint[FINGERPRINT_SIZE];
+    const char *fingerprint;
     const unsigned char *scts;
     apr_size_t scts_len;
     apr_status_t rv;
@@ -1488,7 +1483,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
     /* need to reply with SCT */
 
     server_cert = SSL_get_certificate(ssl); /* no need to free! */
-    get_fingerprint(server_cert, fingerprint, sizeof fingerprint);
+    fingerprint = get_cert_fingerprint(c->pool, server_cert);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "certificate fingerprint: %s", fingerprint);
