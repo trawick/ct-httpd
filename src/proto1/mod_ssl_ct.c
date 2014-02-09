@@ -232,9 +232,6 @@ static int in_array(const char *needle, const apr_array_header_t *haystack)
         if (!strcmp(needle, elts[i])) {
             return 1;
         }
-        ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ap_server_conf,
-                     "no match for (%s,%s)",
-                     needle, elts[i]);
     }
 
     return 0;
