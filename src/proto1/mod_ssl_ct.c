@@ -27,7 +27,7 @@
  *
  *   Ah, but the log needs to see intermediate certificates too...
  * 
-dr* + Are we really sending the SCT(s) correctly?  That needs to be tested in
+ * + Are we really sending the SCT(s) correctly?  That needs to be tested in
  *   detail.  But the TLS client used by mod_proxy needs some minimal verification
  *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
@@ -66,6 +66,7 @@ dr* + Are we really sending the SCT(s) correctly?  That needs to be tested in
 #endif
 
 #include "apr_global_mutex.h"
+#include "apr_lib.h"
 #include "apr_signal.h"
 #include "apr_strings.h"
 
@@ -99,8 +100,13 @@ dr* + Are we really sending the SCT(s) correctly?  That needs to be tested in
  */
 #define MAX_SCTS_SIZE 10000
 
+/** Limit on size of log URL list for a certificate
+ */
+#define MAX_LOGLIST_SIZE 1000
+
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
+    apr_array_header_t *log_url_strs;
     apr_array_header_t *cert_files;
     const char *sct_storage;
     const char *ct_tools_dir;
@@ -184,6 +190,78 @@ static int file_exists(apr_pool_t *p, const char *filename)
     apr_status_t rv = apr_stat(&finfo, filename, APR_FINFO_TYPE, p);
 
     return rv == APR_SUCCESS && finfo.filetype == APR_REG;
+}
+
+static void buffer_to_array(apr_pool_t *p, const char *b,
+                            apr_size_t b_size, apr_array_header_t **out)
+{
+    apr_array_header_t *arr = apr_array_make(p, 10, sizeof(char *));
+    const char *ch, *last;
+
+    ch = b;
+    last = b + b_size - 1;
+    while (ch < last) {
+        const char *end = memchr(ch, '\n', last - ch);
+        const char *line;
+
+        if (!end) {
+            end = last + 1;
+        }
+        while (apr_isspace(*ch) && ch < end) {
+            ch++;
+        }
+        if (ch < end) {
+            const char *tmpend = end - 1;
+
+            while (tmpend > ch
+                   && isspace(*tmpend)) {
+                --tmpend;
+            }
+            
+            line = apr_pstrndup(p, ch, 1 + tmpend - ch);
+            *(const char **)apr_array_push(arr) = line;
+        }
+        ch = end + 1;
+    }
+
+    *out = arr;
+}
+
+static int in_array(const char *needle, const apr_array_header_t *haystack)
+{
+    const char * const *elts;
+    int i;
+
+    elts = (const char * const *)haystack->elts;
+    for (i = 0; i < haystack->nelts; i++) {
+        if (!strcmp(needle, elts[i])) {
+            return 1;
+        }
+        ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ap_server_conf,
+                     "no match for (%s,%s)",
+                     needle, elts[i]);
+    }
+
+    return 0;
+}
+
+#define TESTURL1 "http://127.0.0.1:8888"
+#define TESTURL2 "http://127.0.0.1:9999"
+#define TESTURL3 "http://127.0.0.1:10000"
+
+static void run_internal_tests(apr_pool_t *p)
+{
+    apr_array_header_t *arr;
+    const char *filecontents =
+      " " TESTURL1 " \r\n" TESTURL2 "\n"
+      TESTURL3 /* no "\n" */ ;
+
+    buffer_to_array(p, filecontents, strlen(filecontents), &arr);
+    
+    ap_assert(in_array(TESTURL1, arr));
+    ap_assert(in_array(TESTURL2, arr));
+    ap_assert(in_array(TESTURL3, arr));
+    ap_assert(!in_array(TESTURL1 "x", arr));
 }
 
 static apr_status_t readFile(apr_pool_t *p,
@@ -285,20 +363,30 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
 
 /* SCT storage on disk:
  *
- *   <rootdir>/<fingerprint>/hostname_port_uri.sct   SCT for cert with this fingerprint
- *                                                   from this log (could be any number
- *                                                   of these)
- *   <rootdir>/<fingerprint>/<anything>.sct          SCT maintained by the administrator
- *                                                   (file is optional; could be any number
- *                                                   of these)
- *   <rootdir>/<fingerprint>/collated                one or more SCTs ready to send
- *                                                   (this is all that the web server
- *                                                   processes care about)
+ *   <rootdir>/<fingerprint>/logs  
+ *                  List of log URLs, one per line
  *
- * Bug: no automatic way to get rid of .sct files from logs we no longer respect
+ *   <rootdir>/<fingerprint>/AUTO_hostname_port_uri.sct
+ *                  SCT for cert with this fingerprint
+ *                  from this log (could be any number
+ *                  of these)
+ *
+ *   <rootdir>/<fingerprint>/<anything>.sct
+ *                  SCT maintained by the administrator
+ *                  (file is optional; could be any number
+ *                  of these; should not start with "AUTO_")
+ *
+ *   <rootdir>/<fingerprint>/collated
+ *                  one or more SCTs ready to send
+ *                  (this is all that the web server
+ *                  processes care about)
  */
 
 #define COLLATED_SCTS_BASENAME "collated"
+#define LOGLIST_BASENAME       "logs"
+#define LOG_SCT_PREFIX         "AUTO_" /* to distinguish from admin-created .sct
+                                        * files
+                                        */
 
 static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
                                  const char *cert_sct_dir)
@@ -426,7 +514,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
 static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *logURL)
 {
-    char *fn = apr_psprintf(p, "%s_%s_%s.sct",
+    char *fn = apr_psprintf(p, LOG_SCT_PREFIX "%s_%s_%s.sct",
                             logURL->hostname, logURL->port_str, logURL->path);
     char *ch;
 
@@ -569,8 +657,8 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
                              "apr_file_read");
             }
             else {
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, 
-                             "output from log client: %.*s", (int)len, buf);
+                ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, s,
+                             "log client: %.*s", (int)len, buf);
             }
         }
     }
@@ -582,10 +670,16 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
 #endif
 
     rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
-    rv = rv == APR_CHILD_DONE ? 0 : rv;
+    rv = rv == APR_CHILD_DONE ? APR_SUCCESS : rv;
 
-    ap_log_error(APLOG_MARK, APLOG_INFO, rv, s,
+    ap_log_error(APLOG_MARK,
+                 rv != APR_SUCCESS || exitcode ? APLOG_ERR : APLOG_DEBUG,
+                 rv, s,
                  "->exit code %d  exitwhy %d", exitcode, exitwhy);
+
+    if (rv == APR_SUCCESS && exitcode) {
+        rv = APR_EGENERAL;
+    }
 
     return rv;
 }
@@ -640,10 +734,195 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
     return rv;
 }
 
+static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
+                                    const char *listfile, apr_array_header_t *log_urls)
+{
+    apr_file_t *f;
+    apr_status_t rv;
+    apr_uri_t *log_elts;
+    int i;
+
+    rv = apr_file_open(&f, listfile, APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE,
+                       APR_FPROT_OS_DEFAULT, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "can't create %s", listfile);
+        return rv;
+    }
+
+    log_elts  = (apr_uri_t *)log_urls->elts;
+
+    for (i = 0; i < log_urls->nelts; i++) {
+        rv = apr_file_puts(apr_uri_unparse(p, &log_elts[i], 0), f);
+        if (rv == APR_SUCCESS) {
+            rv = apr_file_puts("\n", f);
+        }
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "error writing to %s", listfile);
+            break;
+        }
+    }
+
+    apr_file_close(f);
+
+    return rv;
+}
+
+static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
+                                             const char *cert_sct_dir,
+                                             apr_array_header_t *log_urls,
+                                             apr_array_header_t *log_url_strs)
+{
+    apr_array_header_t *old_urls;
+    apr_size_t contents_size;
+    apr_status_t rv;
+    char *contents, *listfile;
+
+    /* The set of logs can change, and we need to remove SCTs retrieved
+     * from logs that we no longer trust.  To track changes we'll use a
+     * file in the directory for the server certificate.
+     *
+     * (When can the set change?  Right now they can only change at [re]start,
+     * but in the future we should be able to find the set of trusted logs
+     * dynamically.)
+     */
+
+    rv = apr_filepath_merge(&listfile, cert_sct_dir, LOGLIST_BASENAME, 0, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "couldn't build %s + %s",
+                     cert_sct_dir, LOGLIST_BASENAME);
+        return rv;
+    }
+
+    if (file_exists(p, listfile)) {
+        char **elts;
+        int i;
+
+        rv = readFile(p, s, listfile, MAX_LOGLIST_SIZE, &contents, &contents_size);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "couldn't read %s", cert_sct_dir);
+            return rv;
+        }
+
+        buffer_to_array(p, contents, contents_size, &old_urls);
+
+        elts = (char **)old_urls->elts;
+        for (i = 0; i < old_urls->nelts; i++) {
+            if (!in_array(elts[i], log_url_strs)) {
+                char *sct_for_log;
+                int exists;
+                apr_uri_t uri;
+
+                rv = apr_uri_parse(p, elts[i], &uri);
+                if (rv != APR_SUCCESS) {
+                    ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                                 "unparseable log URL %s in file %s - ignoring",
+                                 elts[i], listfile);
+                    /* some garbage in the file? can't map to an auto-maintained SCT,
+                     * so just skip it
+                     */
+                    continue;
+                }
+
+                rv = apr_filepath_merge(&sct_for_log, cert_sct_dir, url_to_fn(p, &uri), 0, p);
+                ap_assert(rv == APR_SUCCESS);
+                exists = file_exists(p, sct_for_log);
+
+                ap_log_error(APLOG_MARK, 
+                             exists ? APLOG_NOTICE : APLOG_DEBUG, 0, s,
+                             "Log %s is no longer enabled%s",
+                             elts[i],
+                             exists ? ", removing SCT" : ", no SCT was present");
+
+                if (exists) {
+                    rv = apr_file_remove(sct_for_log, p);
+                    if (rv != APR_SUCCESS) {
+                        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                                     "can't remove SCT %s from previously trusted log %s",
+                                     sct_for_log, elts[i]);
+                        return rv;
+                    }
+                }
+            }
+        }
+    }
+    else {
+        /* can't tell what was trusted before; just remove everything
+         * that was created automatically
+         */
+        apr_dir_t *d;
+        apr_finfo_t finfo;
+        const char *cur_sct_file;
+
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                     "List of previous logs doesn't exist (%s), removing previously obtained SCTs",
+                     listfile);
+
+        rv = apr_dir_open(&d, cert_sct_dir, p);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
+                         cert_sct_dir);
+            return rv;
+        }
+
+        while ((rv = apr_dir_read(&finfo, APR_FINFO_MTIME|APR_FINFO_NAME, d)) == APR_SUCCESS) {
+            size_t len = strlen(finfo.name);
+            if (len < strlen(LOG_SCT_PREFIX "X.sct")) {
+                continue;
+            }
+
+            if (strcmp(finfo.name + len - 4, ".sct")) {
+                continue;
+            }
+
+            if (memcmp(finfo.name, LOG_SCT_PREFIX, strlen(LOG_SCT_PREFIX))) {
+                continue;
+            }
+
+            rv = apr_filepath_merge((char **)&cur_sct_file, cert_sct_dir, finfo.name, 0, p);
+            if (rv != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                             "can't build filename from %s and %s",
+                             cert_sct_dir, finfo.name);
+                break;
+            }
+
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "Removing %s", cur_sct_file);
+
+            rv = apr_file_remove(cur_sct_file, p);
+            if (rv != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                             "can't remove %s", cert_sct_dir);
+            }
+        }
+
+        if (rv == APR_ENOENT) {
+            rv = APR_SUCCESS;
+        }
+        else if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
+                         cert_sct_dir);
+        }
+
+        apr_dir_close(d);
+    }
+
+    if (rv == APR_SUCCESS) {
+        rv = record_log_urls(s, p, listfile, log_urls);
+    }
+
+    return rv;
+}
+
 static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
                                           const char *cert_fn,
                                           const char *sct_dir,
                                           apr_array_header_t *log_urls,
+                                          apr_array_header_t *log_url_strs,
                                           const char *ct_exe,
                                           apr_time_t max_sct_age)
 {
@@ -667,6 +946,11 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
                          cert_sct_dir);
             return rv;
         }
+    }
+
+    rv = update_log_list_for_cert(s, p, cert_sct_dir, log_urls, log_url_strs);
+    if (rv != APR_SUCCESS) {
+        return rv;
     }
 
     for (i = 0; i < log_urls->nelts; i++) {
@@ -788,7 +1072,9 @@ static int sct_daemon(server_rec *s_main)
     apr_status_t rv;
     apr_pool_t *ptemp;
 
-    apr_signal(SIGCHLD, SIG_IGN);
+    /* Ignoring SIGCHLD results in errno ECHILD returned from apr_proc_wait().
+     * apr_signal(SIGCHLD, SIG_IGN);
+     */
     apr_signal(SIGHUP, daemon_signal_handler);
 
     rv = apr_global_mutex_child_init(&ssl_ct_sct_update,
@@ -871,6 +1157,7 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
             for (i = 0; i < sconf->cert_files->nelts; i++) {
                 rv = refresh_scts_for_cert(s_main, p, cert_elts[i],
                                            sconf->sct_storage, sconf->log_urls,
+                                           sconf->log_url_strs,
                                            sconf->ct_exe,
                                            sconf->max_sct_age);
                 if (rv != APR_SUCCESS) {
@@ -1232,11 +1519,8 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
 {
     conn_rec *c = arg;
 
-#if 0
-    /* so noisy, even for TRACE8 */
     ap_log_cerror(APLOG_MARK, APLOG_TRACE8, 0, c, "tlsext_cb called (%d,%d,%d)",
                   client_server, type, len);
-#endif
 
     if (type == CT_EXTENSION_TYPE) {
         ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "Got CT extension");
@@ -1325,6 +1609,8 @@ static int ssl_ct_pre_config(apr_pool_t *pconf, apr_pool_t *plog,
         return rv;
     }
 
+    run_internal_tests(ptemp);
+
     return OK;
 }
 
@@ -1403,6 +1689,7 @@ static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config
 {
     apr_status_t rv;
     apr_uri_t uri, *puri;
+    char **pstr;
 
     rv = apr_uri_parse(p, lu, &uri);
     if (rv == APR_SUCCESS) {
@@ -1425,9 +1712,12 @@ static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config
         }
         if (!sconf->log_urls) {
             sconf->log_urls = apr_array_make(p, 2, sizeof(uri));
+            sconf->log_url_strs = apr_array_make(p, 2, sizeof(char *));
         }
         puri = (apr_uri_t *)apr_array_push(sconf->log_urls);
         *puri = uri;
+        pstr = (char **)apr_array_push(sconf->log_url_strs);
+        *pstr = apr_uri_unparse(p, &uri, 0);
     }
     return rv;
 }
