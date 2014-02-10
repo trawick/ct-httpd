@@ -548,10 +548,6 @@ static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                 "fingerprint for %s is %s",
-                 certFile, fingerprint);
-
     rv = apr_filepath_merge(&cert_sct_dir, sct_dir, fingerprint, 0, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -1497,9 +1493,6 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
 
     server_cert = SSL_get_certificate(ssl); /* no need to free! */
     fingerprint = get_cert_fingerprint(c->pool, server_cert);
-
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "certificate fingerprint: %s", fingerprint);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "serverExtensionCallback2 called, "
