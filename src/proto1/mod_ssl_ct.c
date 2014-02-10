@@ -515,6 +515,13 @@ static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *logURL)
         /* chars that shouldn't be used in a filename */
         case ':':
         case '/':
+        case '\\':
+        case '*':
+        case '?':
+        case '<':
+        case '>':
+        case '"':
+        case '|':
             *ch = '-';
         }
         ++ch;
