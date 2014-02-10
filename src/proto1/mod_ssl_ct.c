@@ -474,6 +474,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
     rv = read_dir(p, s, cert_sct_dir, "*.sct", &arr);
     if (rv != APR_SUCCESS) {
+        apr_file_close(tmpfile);
         return rv;
     }
 
