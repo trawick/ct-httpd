@@ -38,6 +38,7 @@ what looks like a build nightmare.
 ```
     LoadModule ssl_ct_module modules/mod_ssl_ct.so
     CTLogs http://localhost:8888/ http://otherhost:9999/
+    CTAuditStorage /tmp/audit
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
     CTMaxSCTAge 3600 # 1 hour
