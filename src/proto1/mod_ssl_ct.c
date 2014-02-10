@@ -71,6 +71,7 @@
 #endif
 
 #include "apr_escape.h"
+#include "apr_fnmatch.h"
 #include "apr_global_mutex.h"
 #include "apr_lib.h"
 #include "apr_signal.h"
@@ -256,6 +257,62 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(!in_array(TESTURL1 "x", arr));
 }
 
+static apr_status_t read_dir(apr_pool_t *p,
+                             server_rec *s,
+                             const char *dirname,
+                             const char *pattern,
+                             apr_array_header_t **outarr)
+{
+    apr_array_header_t *arr;
+    apr_dir_t *d;
+    apr_finfo_t finfo;
+    apr_status_t rv;
+    int reported = 0;
+
+    *outarr = NULL;
+    arr = apr_array_make(p, 4, sizeof(char *));
+
+    rv = apr_dir_open(&d, dirname, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
+                     dirname);
+        return rv;
+    }
+
+    while ((rv = apr_dir_read(&finfo, APR_FINFO_NAME, d)) == APR_SUCCESS) {
+        const char *fn;
+
+        if (APR_SUCCESS == apr_fnmatch(pattern, finfo.name, APR_FNM_CASE_BLIND)) {
+            rv = apr_filepath_merge((char **)&fn, dirname, finfo.name, 0, p);
+            if (rv != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                             "can't build filename from %s and %s",
+                             dirname, finfo.name);
+                reported = 1;
+                break;
+            }
+
+            *(char **)apr_array_push(arr) = apr_pstrdup(p, fn);
+        }
+    }
+
+    if (rv == APR_ENOENT) {
+        rv = APR_SUCCESS;
+    }
+    else if (rv != APR_SUCCESS && !reported) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "couldn't read entry from dir %s", dirname);
+    }
+
+    apr_dir_close(d);
+
+    if (rv == APR_SUCCESS) {
+        *outarr = arr;
+    }
+
+    return rv;
+}
+
 static apr_status_t readFile(apr_pool_t *p,
                              server_rec *s,
                              const char *fn,
@@ -383,11 +440,13 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
                                  const char *cert_sct_dir)
 {
     /* Read the various .sct files and stick them together in a single file */
-    apr_dir_t *d;
+    apr_array_header_t *arr;
     apr_status_t rv;
-    apr_finfo_t finfo;
-    char *tmp_collated_fn, *collated_fn, *cur_sct_file;
     apr_file_t *tmpfile;
+    char *tmp_collated_fn, *collated_fn;
+    const char *cur_sct_file;
+    const char * const *elts;
+    int i;
 
     rv = apr_filepath_merge(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, 0, p);
     if (rv != APR_SUCCESS) {
@@ -413,37 +472,21 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    rv = apr_dir_open(&d, cert_sct_dir, p);
+    rv = read_dir(p, s, cert_sct_dir, "*.sct", &arr);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
-                     cert_sct_dir);
         return rv;
     }
 
-    while ((rv = apr_dir_read(&finfo, APR_FINFO_NAME, d)) == APR_SUCCESS) {
-        /* only care about files which end in ".sct" */
-        size_t len = strlen(finfo.name);
+    elts = (const char * const *)arr->elts;
+
+    for (i = 0; i < arr->nelts; i++) {
         char *scts;
         apr_size_t scts_size, bytes_written;
 
-        if (len < strlen("X.sct")) {
-            continue;
-        }
-
-        if (strcmp(finfo.name + len - 4, ".sct")) {
-            continue;
-        }
-
-        rv = apr_filepath_merge(&cur_sct_file, cert_sct_dir, finfo.name, 0, p);
-        if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "can't build filename from %s and %s",
-                         cert_sct_dir, finfo.name);
-            break;
-        }
+        cur_sct_file = elts[i];
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                     "Adding SCT from file %s", finfo.name);
+                     "Adding SCT from file %s", cur_sct_file);
 
         rv = readFile(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
         if (rv != APR_SUCCESS) {
@@ -459,16 +502,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         }
     }
 
-    if (rv == APR_ENOENT) {
-        rv = APR_SUCCESS;
-    }
-    else if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
-                     cert_sct_dir);
-    }
-
     apr_file_close(tmpfile);
-    apr_dir_close(d);
 
     if (rv == APR_SUCCESS) {
         int replacing = file_exists(p, collated_fn);
@@ -846,42 +880,22 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
         /* can't tell what was trusted before; just remove everything
          * that was created automatically
          */
-        apr_dir_t *d;
-        apr_finfo_t finfo;
-        const char *cur_sct_file;
+        apr_array_header_t *arr;
+        const char * const *elts;
+        int i;
 
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                      "List of previous logs doesn't exist (%s), removing previously obtained SCTs",
                      listfile);
 
-        rv = apr_dir_open(&d, cert_sct_dir, p);
+        rv = read_dir(p, s, cert_sct_dir, LOG_SCT_PREFIX "*.sct", &arr);
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
-                         cert_sct_dir);
             return rv;
         }
 
-        while ((rv = apr_dir_read(&finfo, APR_FINFO_NAME, d)) == APR_SUCCESS) {
-            size_t len = strlen(finfo.name);
-            if (len < strlen(LOG_SCT_PREFIX "X.sct")) {
-                continue;
-            }
-
-            if (strcmp(finfo.name + len - 4, ".sct")) {
-                continue;
-            }
-
-            if (memcmp(finfo.name, LOG_SCT_PREFIX, strlen(LOG_SCT_PREFIX))) {
-                continue;
-            }
-
-            rv = apr_filepath_merge((char **)&cur_sct_file, cert_sct_dir, finfo.name, 0, p);
-            if (rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                             "can't build filename from %s and %s",
-                             cert_sct_dir, finfo.name);
-                break;
-            }
+        elts = (const char * const *)arr->elts;
+        for (i = 0; i < arr->nelts; i++) {
+            const char *cur_sct_file = elts[i];
 
             ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                          "Removing %s", cur_sct_file);
@@ -889,19 +903,9 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
             rv = apr_file_remove(cur_sct_file, p);
             if (rv != APR_SUCCESS) {
                 ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                             "can't remove %s", cert_sct_dir);
+                             "can't remove %s", cur_sct_file);
             }
         }
-
-        if (rv == APR_ENOENT) {
-            rv = APR_SUCCESS;
-        }
-        else if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
-                         cert_sct_dir);
-        }
-
-        apr_dir_close(d);
     }
 
     if (rv == APR_SUCCESS) {
