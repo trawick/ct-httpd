@@ -71,7 +71,7 @@
 
 #include "apr_version.h"
 #if !APR_VERSION_AT_LEAST(1,5,0)
-#error mod_ssl_ct requires APR 1.5.0 or later!
+#error mod_ssl_ct requires APR 1.5.0 or later! (for apr_escape.h stuff)
 #endif
 
 #include "apr_escape.h"
