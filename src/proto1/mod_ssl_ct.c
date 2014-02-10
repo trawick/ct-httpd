@@ -42,6 +42,7 @@
  * + Known low-level code kludges/problems
  *   . no way to log CT-awareness of backend server (put it in configurable response
  *     header to allow logging or easy testing from client)
+ *   . shouldn't have to read collation of server SCTs on every handshake
  *
  * + Everything else
  *   . ??
