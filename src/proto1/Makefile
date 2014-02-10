@@ -4,15 +4,15 @@ APXS = $(INST)/bin/apxs
 SSLSRC = $(HOME)/svn/httpd-ct/modules/ssl
 OPENSSLINST = $(HOME)/inst/omaster
 
-SOURCES = mod_ssl_ct.c Makefile *.py
+SOURCES = mod_ssl_ct.c ssl_ct_util.h ssl_ct_util.c Makefile *.py
 
 all: mod_ssl_ct.la
 
 clean:
 	rm *.la *.lo *.o *.slo
 
-mod_ssl_ct.la: mod_ssl_ct.c
-	$(APXS) -c -I$(SSLSRC) -I$(OPENSSLINST)/include mod_ssl_ct.c
+mod_ssl_ct.la: mod_ssl_ct.c ssl_ct_util.c ssl_ct_util.h
+	$(APXS) -c -I$(SSLSRC) -I$(OPENSSLINST)/include mod_ssl_ct.c ssl_ct_util.c
 
 install: mod_ssl_ct.la stop pure-install
 

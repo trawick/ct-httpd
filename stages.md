@@ -34,6 +34,9 @@ what looks like a build nightmare.
 * Patch httpd trunk with src/proto1/httpd.patch (using OpenSSL 1.0.2)
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
+```
+    apxs -ci -I/path/to/httpd/modules/ssl -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_util.c
+```
 * Configure mod\_ssl\_ct like this:
 ```
     LoadModule ssl_ct_module modules/mod_ssl_ct.so

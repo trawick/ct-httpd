@@ -75,9 +75,7 @@
 #endif
 
 #include "apr_escape.h"
-#include "apr_fnmatch.h"
 #include "apr_global_mutex.h"
-#include "apr_lib.h"
 #include "apr_signal.h"
 #include "apr_strings.h"
 
@@ -93,6 +91,8 @@
 #include "ap_mpm.h"
 
 #include "ssl_hooks.h"
+
+#include "ssl_ct_util.h"
 
 #include "openssl/x509v3.h"
 
@@ -242,72 +242,6 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
     return apr_pescape_hex(p, md, n, 0);
 }
 
-static int dir_exists(apr_pool_t *p, const char *dirname)
-{
-    apr_finfo_t finfo;
-    apr_status_t rv = apr_stat(&finfo, dirname, APR_FINFO_TYPE, p);
-
-    return rv == APR_SUCCESS && finfo.filetype == APR_DIR;
-}
-
-static int file_exists(apr_pool_t *p, const char *filename)
-{
-    apr_finfo_t finfo;
-    apr_status_t rv = apr_stat(&finfo, filename, APR_FINFO_TYPE, p);
-
-    return rv == APR_SUCCESS && finfo.filetype == APR_REG;
-}
-
-static void buffer_to_array(apr_pool_t *p, const char *b,
-                            apr_size_t b_size, apr_array_header_t **out)
-{
-    apr_array_header_t *arr = apr_array_make(p, 10, sizeof(char *));
-    const char *ch, *last;
-
-    ch = b;
-    last = b + b_size - 1;
-    while (ch < last) {
-        const char *end = memchr(ch, '\n', last - ch);
-        const char *line;
-
-        if (!end) {
-            end = last + 1;
-        }
-        while (apr_isspace(*ch) && ch < end) {
-            ch++;
-        }
-        if (ch < end) {
-            const char *tmpend = end - 1;
-
-            while (tmpend > ch
-                   && isspace(*tmpend)) {
-                --tmpend;
-            }
-            
-            line = apr_pstrndup(p, ch, 1 + tmpend - ch);
-            *(const char **)apr_array_push(arr) = line;
-        }
-        ch = end + 1;
-    }
-
-    *out = arr;
-}
-
-static int in_array(const char *needle, const apr_array_header_t *haystack)
-{
-    const char * const *elts;
-    int i;
-
-    elts = (const char * const *)haystack->elts;
-    for (i = 0; i < haystack->nelts; i++) {
-        if (!strcmp(needle, elts[i])) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
 #define TESTURL1 "http://127.0.0.1:8888"
 #define TESTURL2 "http://127.0.0.1:9999"
 #define TESTURL3 "http://127.0.0.1:10000"
@@ -319,125 +253,12 @@ static void run_internal_tests(apr_pool_t *p)
       " " TESTURL1 " \r\n" TESTURL2 "\n"
       TESTURL3 /* no "\n" */ ;
 
-    buffer_to_array(p, filecontents, strlen(filecontents), &arr);
+    ctutil_buffer_to_array(p, filecontents, strlen(filecontents), &arr);
     
-    ap_assert(in_array(TESTURL1, arr));
-    ap_assert(in_array(TESTURL2, arr));
-    ap_assert(in_array(TESTURL3, arr));
-    ap_assert(!in_array(TESTURL1 "x", arr));
-}
-
-/* read_dir() is remarkably like apr_match_glob(), which could
- * probably use some processing flags to indicate variations on
- * the basic behavior (and implement better error checking).
- */
-static apr_status_t read_dir(apr_pool_t *p,
-                             server_rec *s,
-                             const char *dirname,
-                             const char *pattern,
-                             apr_array_header_t **outarr)
-{
-    apr_array_header_t *arr;
-    apr_dir_t *d;
-    apr_finfo_t finfo;
-    apr_status_t rv;
-    int reported = 0;
-
-    *outarr = NULL;
-    arr = apr_array_make(p, 4, sizeof(char *));
-
-    rv = apr_dir_open(&d, dirname, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "couldn't read dir %s",
-                     dirname);
-        return rv;
-    }
-
-    while ((rv = apr_dir_read(&finfo, APR_FINFO_NAME, d)) == APR_SUCCESS) {
-        const char *fn;
-
-        if (APR_SUCCESS == apr_fnmatch(pattern, finfo.name, APR_FNM_CASE_BLIND)) {
-            rv = apr_filepath_merge((char **)&fn, dirname, finfo.name, 0, p);
-            if (rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                             "can't build filename from %s and %s",
-                             dirname, finfo.name);
-                reported = 1;
-                break;
-            }
-
-            *(char **)apr_array_push(arr) = apr_pstrdup(p, fn);
-        }
-    }
-
-    if (rv == APR_ENOENT) {
-        rv = APR_SUCCESS;
-    }
-    else if (rv != APR_SUCCESS && !reported) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "couldn't read entry from dir %s", dirname);
-    }
-
-    apr_dir_close(d);
-
-    if (rv == APR_SUCCESS) {
-        *outarr = arr;
-    }
-
-    return rv;
-}
-
-static apr_status_t read_file(apr_pool_t *p,
-                              server_rec *s,
-                              const char *fn,
-                              apr_size_t limit,
-                              char **contents,
-                              apr_size_t *contents_size)
-{
-    apr_file_t *f;
-    apr_finfo_t finfo;
-    apr_status_t rv;
-    apr_size_t nbytes;
-
-    *contents = NULL;
-    *contents_size = 0;
-
-    rv = apr_file_open(&f, fn, APR_READ | APR_BINARY, APR_FPROT_OS_DEFAULT, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "couldn't read %s", fn);
-        return rv;
-    }
-    
-    rv = apr_file_info_get(&finfo, APR_FINFO_SIZE, f);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "couldn't retrieve size of %s", fn);
-        apr_file_close(f);
-        return rv;
-    }
-
-    if (finfo.size > limit) {
-        rv = APR_ENOSPC;
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "size %" APR_OFF_T_FMT " of %s exceeds limit (%"
-                     APR_SIZE_T_FMT ")", finfo.size, fn, limit);
-        apr_file_close(f);
-        return rv;
-    }
-
-    nbytes = (apr_size_t)finfo.size;
-    *contents = apr_palloc(p, nbytes);
-    rv = apr_file_read_full(f, *contents, nbytes, contents_size);
-    if (rv != APR_SUCCESS) { /* shouldn't get APR_EOF since we know
-                              * how big the file is
-                              */
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "apr_file_read_full");
-    }
-    apr_file_close(f);
-
-    return rv;
+    ap_assert(ctutil_in_array(TESTURL1, arr));
+    ap_assert(ctutil_in_array(TESTURL2, arr));
+    ap_assert(ctutil_in_array(TESTURL3, arr));
+    ap_assert(!ctutil_in_array(TESTURL1 "x", arr));
 }
 
 /* As of httpd 2.5, this should only read the FIRST certificate
@@ -453,8 +274,8 @@ static apr_status_t read_leaf_certificate(server_rec *s,
 
     /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
 
-    rv = read_file(p, s, fn, MAX_CERT_FILE_SIZE, (char **)leaf_cert,
-                   leaf_cert_size);
+    rv = ctutil_read_file(p, s, fn, MAX_CERT_FILE_SIZE, (char **)leaf_cert,
+                          leaf_cert_size);
 
     return rv;
 }
@@ -523,10 +344,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     const char * const *elts;
     int i;
 
-    rv = apr_filepath_merge(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, 0, p);
+    rv = ctutil_path_join(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "can't build path based on %s", cert_sct_dir);
         return rv;
     }
 
@@ -548,7 +367,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    rv = read_dir(p, s, cert_sct_dir, "*.sct", &arr);
+    rv = ctutil_read_dir(p, s, cert_sct_dir, "*.sct", &arr);
     if (rv != APR_SUCCESS) {
         apr_file_close(tmpfile);
         return rv;
@@ -565,7 +384,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                      "Adding SCT from file %s", cur_sct_file);
 
-        rv = read_file(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
+        rv = ctutil_read_file(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
         if (rv != APR_SUCCESS) {
             break;
         }
@@ -589,7 +408,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     }
 
     if (rv == APR_SUCCESS) {
-        int replacing = file_exists(p, collated_fn);
+        int replacing = ctutil_file_exists(p, collated_fn);
 
         if (replacing) {
             if ((rv = apr_global_mutex_lock(ssl_ct_sct_update)) != APR_SUCCESS) {
@@ -669,10 +488,8 @@ static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    rv = apr_filepath_merge(&cert_sct_dir, sct_dir, fingerprint, 0, p);
+    rv = ctutil_path_join(&cert_sct_dir, sct_dir, fingerprint, p, s);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "failed to construct path to SCT for %s", cert_file);
         return rv;
     }
 
@@ -811,11 +628,8 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
 
     log_url_basename = url_to_fn(p, log_url);
 
-    rv = apr_filepath_merge(&sct_fn, cert_sct_dir, log_url_basename, 0, p);
+    rv = ctutil_path_join(&sct_fn, cert_sct_dir, log_url_basename, p, s);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "failed to construct path to SCT for %s (log fn %s)",
-                     cert_file, log_url_basename);
         return rv;
     }
 
@@ -911,30 +725,25 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
      * dynamically.)
      */
 
-    rv = apr_filepath_merge(&listfile, cert_sct_dir, LOGLIST_BASENAME, 0, p);
+    rv = ctutil_path_join(&listfile, cert_sct_dir, LOGLIST_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                     "couldn't build %s + %s",
-                     cert_sct_dir, LOGLIST_BASENAME);
         return rv;
     }
 
-    if (file_exists(p, listfile)) {
+    if (ctutil_file_exists(p, listfile)) {
         char **elts;
         int i;
 
-        rv = read_file(p, s, listfile, MAX_LOGLIST_SIZE, &contents, &contents_size);
+        rv = ctutil_read_file(p, s, listfile, MAX_LOGLIST_SIZE, &contents, &contents_size);
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "couldn't read %s", cert_sct_dir);
             return rv;
         }
 
-        buffer_to_array(p, contents, contents_size, &old_urls);
+        ctutil_buffer_to_array(p, contents, contents_size, &old_urls);
 
         elts = (char **)old_urls->elts;
         for (i = 0; i < old_urls->nelts; i++) {
-            if (!in_array(elts[i], log_url_strs)) {
+            if (!ctutil_in_array(elts[i], log_url_strs)) {
                 char *sct_for_log;
                 int exists;
                 apr_uri_t uri;
@@ -950,9 +759,9 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
                     continue;
                 }
 
-                rv = apr_filepath_merge(&sct_for_log, cert_sct_dir, url_to_fn(p, &uri), 0, p);
+                rv = ctutil_path_join(&sct_for_log, cert_sct_dir, url_to_fn(p, &uri), p, s);
                 ap_assert(rv == APR_SUCCESS);
-                exists = file_exists(p, sct_for_log);
+                exists = ctutil_file_exists(p, sct_for_log);
 
                 ap_log_error(APLOG_MARK, 
                              exists ? APLOG_NOTICE : APLOG_DEBUG, 0, s,
@@ -984,7 +793,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
                      "List of previous logs doesn't exist (%s), removing previously obtained SCTs",
                      listfile);
 
-        rv = read_dir(p, s, cert_sct_dir, LOG_SCT_PREFIX "*.sct", &arr);
+        rv = ctutil_read_dir(p, s, cert_sct_dir, LOG_SCT_PREFIX "*.sct", &arr);
         if (rv != APR_SUCCESS) {
             return rv;
         }
@@ -1031,7 +840,7 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    if (!dir_exists(p, cert_sct_dir)) {
+    if (!ctutil_dir_exists(p, cert_sct_dir)) {
         rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, p);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -1368,25 +1177,13 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
     apr_status_t rv, tmprv;
     char *cert_dir, *sct_fn;
 
-    rv = apr_filepath_merge(&cert_dir, sct_dir, fingerprint, 0, p);
+    rv = ctutil_path_join(&cert_dir, sct_dir, fingerprint, p, s);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK,
-                     /* this worked at init! */
-                     APLOG_CRIT,
-                     rv, s,
-                     "failed to construct path to SCT for cert with fingerprint %s",
-                     fingerprint);
         return rv;
     }
 
-    rv = apr_filepath_merge(&sct_fn, cert_dir, COLLATED_SCTS_BASENAME, 0, p);
+    rv = ctutil_path_join(&sct_fn, cert_dir, COLLATED_SCTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK,
-                     /* this worked at init! */
-                     APLOG_CRIT,
-                     rv, s,
-                     "failed to construct path to SCT for cert with fingerprint %s",
-                     fingerprint);
         return rv;
     }
 
@@ -1396,7 +1193,7 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
         return rv;
     }
 
-    rv = read_file(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
+    rv = ctutil_read_file(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
 
     if ((tmprv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, tmprv, s,
@@ -1967,27 +1764,25 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
 
     audit_basename = apr_psprintf(p, "audit_%" APR_PID_T_FMT,
                                   getpid());
-    rv = apr_filepath_merge((char **)&audit_fn_perm, sconf->audit_storage, audit_basename, 0, p);
+    rv = ctutil_path_join((char **)&audit_fn_perm, sconf->audit_storage,
+                          audit_basename, p, s);
     if (rv != APR_SUCCESS) {
         audit_fn_perm = NULL;
         audit_fn_active = NULL;
-        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                     "could not merge path %s with %s",
-                     sconf->audit_storage, audit_basename);
         return;
     }
 
     audit_fn_active = apr_pstrcat(p, audit_fn_perm, ".tmp", NULL);
     audit_fn_perm = apr_pstrcat(p, audit_fn_perm, ".out", NULL);
 
-    if (file_exists(p, audit_fn_active)) {
+    if (ctutil_file_exists(p, audit_fn_active)) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
                      "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
                      audit_fn_active);
         apr_file_remove(audit_fn_active, p);
     }
 
-    if (file_exists(p, audit_fn_perm)) {
+    if (ctutil_file_exists(p, audit_fn_perm)) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
                      "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
                      audit_fn_perm);
@@ -2129,7 +1924,7 @@ static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    if (!dir_exists(cmd->pool, arg)) {
+    if (!ctutil_dir_exists(cmd->pool, arg)) {
         return apr_pstrcat(cmd->pool, "CTSCTStorage: Directory ", arg,
                            " does not exist", NULL);
     }
@@ -2149,7 +1944,7 @@ static const char *ct_audit_storage(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    if (!dir_exists(cmd->pool, arg)) {
+    if (!ctutil_dir_exists(cmd->pool, arg)) {
         return apr_pstrcat(cmd->pool, "CTAuditStorage: Directory ", arg,
                            " does not exist", NULL);
     }
@@ -2170,20 +1965,20 @@ static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    if (!dir_exists(cmd->pool, arg)) {
+    if (!ctutil_dir_exists(cmd->pool, arg)) {
         return apr_pstrcat(cmd->pool, "CTToolsDir: Directory ", arg,
                            " does not exist", NULL);
     }
 
-    rv = apr_filepath_merge((char **)&sconf->ct_exe, arg,  "src/client/ct" DOTEXE,
-                            0, cmd->pool);
+    rv = ctutil_path_join((char **)&sconf->ct_exe, arg,  "src/client/ct" DOTEXE,
+                          cmd->pool, NULL);
     if (rv != APR_SUCCESS) {
         return apr_psprintf(cmd->pool,
                             "CTToolsDir: Couldn't build path to ct" DOTEXE
                             ": %pm", &rv);
     }
 
-    if (!file_exists(cmd->pool, sconf->ct_exe)) {
+    if (!ctutil_file_exists(cmd->pool, sconf->ct_exe)) {
         return apr_pstrcat(cmd->pool, "CTToolsDir: File ", sconf->ct_exe,
                            " does not exist", NULL);
     }
