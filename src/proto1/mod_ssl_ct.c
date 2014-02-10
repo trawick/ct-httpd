@@ -420,7 +420,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    while ((rv = apr_dir_read(&finfo, APR_FINFO_MTIME|APR_FINFO_NAME, d)) == APR_SUCCESS) {
+    while ((rv = apr_dir_read(&finfo, APR_FINFO_NAME, d)) == APR_SUCCESS) {
         /* only care about files which end in ".sct" */
         size_t len = strlen(finfo.name);
         char *scts;
@@ -861,7 +861,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
             return rv;
         }
 
-        while ((rv = apr_dir_read(&finfo, APR_FINFO_MTIME|APR_FINFO_NAME, d)) == APR_SUCCESS) {
+        while ((rv = apr_dir_read(&finfo, APR_FINFO_NAME, d)) == APR_SUCCESS) {
             size_t len = strlen(finfo.name);
             if (len < strlen(LOG_SCT_PREFIX "X.sct")) {
                 continue;
