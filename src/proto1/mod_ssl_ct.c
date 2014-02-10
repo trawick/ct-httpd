@@ -27,6 +27,9 @@
  *
  *   Ah, but the log needs to see intermediate certificates too...
  * 
+ * + OCSP stapling as a means of delivering SCT(s)
+ *   This is completely ignored at present.
+ *
  * + Are we really sending the SCT(s) correctly?  That needs to be tested in
  *   detail.  But the TLS client used by mod_proxy needs some minimal verification
  *   implemented anyway.
@@ -40,8 +43,6 @@
  *   . ??
  *
  * + Known low-level code kludges/problems
- *   . proxy can recognize when certificate has SCT list in extension but currently
- *     fails to extract it
  *   . no way to log CT-awareness of backend server (put it in configurable response
  *     header to allow logging or easy testing from client)
  *   . shouldn't have to read collation of server SCTs on every handshake
@@ -1560,15 +1561,15 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
 
     if (extension_index >= 0) {
         void *ext_struct;
-        int crit;
 
         server_cert_has_sct_list(c);
         /* as in Cert::ExtensionStructure() */
         ext_struct = X509_get_ext_d2i(leaf,
                                       NID_ctEmbeddedSignedCertificateTimestampList,
-                                      &crit, NULL);
+                                      NULL, /* ignore criticality of extension */
+                                      NULL);
 
-        if (ext_struct == NULL || crit != -1) {
+        if (ext_struct == NULL) {
             ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                           "Could not retrieve SCT list from certificate (unexpected)");
         }
@@ -1602,7 +1603,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c,
                   "SCT list received in: %s%s%s",
                   conncfg->serverhello_has_sct_list ? "ServerHello " : "",
-                  conncfg->server_cert_has_sct_list ? "certificate extension " : "",
+                  conncfg->server_cert_has_sct_list ? "certificate-extension " : "",
                   ""); /* no logic for stapled response yet */
     return OK;
 }
