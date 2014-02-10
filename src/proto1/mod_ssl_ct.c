@@ -257,6 +257,10 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(!in_array(TESTURL1 "x", arr));
 }
 
+/* read_dir() is remarkably like apr_match_glob(), which could
+ * probably use some processing flags to indicate variations on
+ * the basic behavior (and implement better error checking).
+ */
 static apr_status_t read_dir(apr_pool_t *p,
                              server_rec *s,
                              const char *dirname,
@@ -346,7 +350,8 @@ static apr_status_t read_file(apr_pool_t *p,
     if (finfo.size > limit) {
         rv = APR_ENOSPC;
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "size of %s exceeds limit", fn);
+                     "size %" APR_OFF_T_FMT " of %s exceeds limit (%"
+                     APR_SIZE_T_FMT ")", finfo.size, fn, limit);
         apr_file_close(f);
         return rv;
     }
@@ -441,7 +446,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 {
     /* Read the various .sct files and stick them together in a single file */
     apr_array_header_t *arr;
-    apr_status_t rv;
+    apr_status_t rv, tmprv;
     apr_file_t *tmpfile;
     char *tmp_collated_fn, *collated_fn;
     const char *cur_sct_file;
@@ -464,7 +469,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     tmp_collated_fn = apr_pstrcat(p, collated_fn, ".tmp", NULL);
 
     rv = apr_file_open(&tmpfile, tmp_collated_fn,
-                       APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE|APR_FOPEN_BINARY,
+                       APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
+                       |APR_FOPEN_BINARY|APR_FOPEN_BUFFERED,
                        APR_FPROT_OS_DEFAULT, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -503,7 +509,14 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         }
     }
 
-    apr_file_close(tmpfile);
+    tmprv = apr_file_close(tmpfile);
+    if (tmprv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, tmprv, s,
+                     "error flushing and closing %s", tmp_collated_fn);
+        if (rv == APR_SUCCESS) {
+            rv = tmprv;
+        }
+    }
 
     if (rv == APR_SUCCESS) {
         int replacing = file_exists(p, collated_fn);
@@ -528,9 +541,12 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             }
         }
         if (replacing) {
-            if ((rv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+            if ((tmprv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, tmprv, s,
                              "global mutex unlock failed");
+                if (rv == APR_SUCCESS) {
+                    rv = tmprv;
+                }
             }
         }
     }
@@ -766,11 +782,13 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
                                     const char *listfile, apr_array_header_t *log_urls)
 {
     apr_file_t *f;
-    apr_status_t rv;
+    apr_status_t rv, tmprv;
     apr_uri_t *log_elts;
     int i;
 
-    rv = apr_file_open(&f, listfile, APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE,
+    rv = apr_file_open(&f, listfile,
+                       APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
+                       |APR_FOPEN_BUFFERED,
                        APR_FPROT_OS_DEFAULT, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -792,7 +810,14 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
         }
     }
 
-    apr_file_close(f);
+    tmprv = apr_file_close(f);
+    if (tmprv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, tmprv, s,
+                     "error flushing and closing %s", listfile);
+        if (rv == APR_SUCCESS) {
+            rv = tmprv;
+        }
+    }
 
     return rv;
 }
