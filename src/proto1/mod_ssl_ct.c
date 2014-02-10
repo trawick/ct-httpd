@@ -1139,8 +1139,11 @@ static apr_status_t ssl_ct_mutex_remove(void *data)
 
 static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
 {
+    apr_hash_t *already_processed;
     apr_status_t rv;
     server_rec *s;
+
+    already_processed = apr_hash_make(p);
 
     s = s_main;
     while (s) {
@@ -1152,13 +1155,21 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
         if (sconf && sconf->cert_files) {
             cert_elts = (const char **)sconf->cert_files->elts;
             for (i = 0; i < sconf->cert_files->nelts; i++) {
-                rv = refresh_scts_for_cert(s_main, p, cert_elts[i],
-                                           sconf->sct_storage, sconf->log_urls,
-                                           sconf->log_url_strs,
-                                           sconf->ct_exe,
-                                           sconf->max_sct_age);
-                if (rv != APR_SUCCESS) {
-                    return rv;
+                /* we may have already processed this cert for another
+                 * server_rec
+                 */
+                if (!apr_hash_get(already_processed, cert_elts[i],
+                                  APR_HASH_KEY_STRING)) {
+                    apr_hash_set(already_processed, cert_elts[i],
+                                 APR_HASH_KEY_STRING, "done");
+                    rv = refresh_scts_for_cert(s_main, p, cert_elts[i],
+                                               sconf->sct_storage, sconf->log_urls,
+                                               sconf->log_url_strs,
+                                               sconf->ct_exe,
+                                               sconf->max_sct_age);
+                    if (rv != APR_SUCCESS) {
+                        return rv;
+                    }
                 }
             }
         }
