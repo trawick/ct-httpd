@@ -313,12 +313,12 @@ static apr_status_t read_dir(apr_pool_t *p,
     return rv;
 }
 
-static apr_status_t readFile(apr_pool_t *p,
-                             server_rec *s,
-                             const char *fn,
-                             apr_size_t limit,
-                             char **contents,
-                             apr_size_t *contents_size)
+static apr_status_t read_file(apr_pool_t *p,
+                              server_rec *s,
+                              const char *fn,
+                              apr_size_t limit,
+                              char **contents,
+                              apr_size_t *contents_size)
 {
     apr_file_t *f;
     apr_finfo_t finfo;
@@ -369,37 +369,37 @@ static apr_status_t readFile(apr_pool_t *p,
  * in the file.  NOT IMPLEMENTED (assumes that the leaf certificate
  * is the ONLY certificate)
  */
-static apr_status_t readLeafCertificate(server_rec *s,
-                                        const char *fn, apr_pool_t *p,
-                                        const char **leafCert, 
-                                        apr_size_t *leafCertSize)
+static apr_status_t read_leaf_certificate(server_rec *s,
+                                          const char *fn, apr_pool_t *p,
+                                          const char **leaf_cert, 
+                                          apr_size_t *leaf_cert_size)
 {
     apr_status_t rv;
 
     /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
 
-    rv = readFile(p, s, fn, MAX_CERT_FILE_SIZE, (char **)leafCert,
-                  leafCertSize);
+    rv = read_file(p, s, fn, MAX_CERT_FILE_SIZE, (char **)leaf_cert,
+                   leaf_cert_size);
 
     return rv;
 }
 
 static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
                                                    apr_pool_t *p,
-                                                   const char *certFile,
+                                                   const char *cert_file,
                                                    const char **fingerprint)
 {
     apr_status_t rv;
     BIO *bio;
     X509 *x;
-    const char *leafCert;
-    apr_size_t leafCertSize;
+    const char *leaf_cert;
+    apr_size_t leaf_cert_size;
 
-    rv = readLeafCertificate(s, certFile, p,
-                             &leafCert, &leafCertSize);
+    rv = read_leaf_certificate(s, cert_file, p,
+                               &leaf_cert, &leaf_cert_size);
 
     if (rv == APR_SUCCESS) {
-        bio = BIO_new_mem_buf((void *)leafCert, leafCertSize);
+        bio = BIO_new_mem_buf((void *)leaf_cert, leaf_cert_size);
         ap_assert(bio);
         x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
         ap_assert(x);
@@ -489,7 +489,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                      "Adding SCT from file %s", cur_sct_file);
 
-        rv = readFile(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
+        rv = read_file(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
         if (rv != APR_SUCCESS) {
             break;
         }
@@ -538,10 +538,10 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     return rv;
 }
 
-static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *logURL)
+static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *log_url)
 {
     char *fn = apr_psprintf(p, LOG_SCT_PREFIX "%s_%s_%s.sct",
-                            logURL->hostname, logURL->port_str, logURL->path);
+                            log_url->hostname, log_url->port_str, log_url->path);
     char *ch;
 
     ch = fn;
@@ -565,7 +565,7 @@ static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *logURL)
 }
 
 static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
-                                     const char *certFile,
+                                     const char *cert_file,
                                      const char *sct_dir,
                                      char **cert_sct_dir_out)
 {
@@ -575,18 +575,18 @@ static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
 
     *cert_sct_dir_out = NULL;
 
-    rv = get_cert_fingerprint_from_file(s, p, certFile, &fingerprint);
+    rv = get_cert_fingerprint_from_file(s, p, cert_file, &fingerprint);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                      "failed to get certificate fingerprint from %s",
-                     certFile);
+                     cert_file);
         return rv;
     }
 
     rv = apr_filepath_merge(&cert_sct_dir, sct_dir, fingerprint, 0, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "failed to construct path to SCT for %s", certFile);
+                     "failed to construct path to SCT for %s", cert_file);
         return rv;
     }
 
@@ -595,7 +595,7 @@ static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
 }
 
 static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
-                               const apr_uri_t *logURL, const char *certFile,
+                               const apr_uri_t *log_url, const char *cert_file,
                                const char *sct_fn)
 {
     apr_pollfd_t pfd = {0};
@@ -609,10 +609,10 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
 
     i = 0;
     args[i++] = ct_exe;
-    args[i++] = apr_pstrcat(p, "--ct_server=", logURL->hostinfo, NULL);
+    args[i++] = apr_pstrcat(p, "--ct_server=", log_url->hostinfo, NULL);
     args[i++] = "--http_log";
     args[i++] = "--logtostderr";
-    args[i++] = apr_pstrcat(p, "--ct_server_submission=", certFile, NULL);
+    args[i++] = apr_pstrcat(p, "--ct_server_submission=", cert_file, NULL);
     args[i++] = apr_pstrcat(p, "--ct_server_response_out=", sct_fn, NULL);
     args[i++] = "upload";
     args[i++] = NULL;
@@ -713,23 +713,23 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
 }
 
 static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
-                              const char *certFile,
+                              const char *cert_file,
                               const char *cert_sct_dir,
-                              const apr_uri_t *logURL, const char *sct_dir,
+                              const apr_uri_t *log_url, const char *sct_dir,
                               const char *ct_exe, apr_time_t max_sct_age)
 {
     apr_status_t rv;
     char *sct_fn;
     apr_finfo_t finfo;
-    const char *logURL_basename;
+    const char *log_url_basename;
 
-    logURL_basename = url_to_fn(p, logURL);
+    log_url_basename = url_to_fn(p, log_url);
 
-    rv = apr_filepath_merge(&sct_fn, cert_sct_dir, logURL_basename, 0, p);
+    rv = apr_filepath_merge(&sct_fn, cert_sct_dir, log_url_basename, 0, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                      "failed to construct path to SCT for %s (log fn %s)",
-                     certFile, logURL_basename);
+                     cert_file, log_url_basename);
         return rv;
     }
 
@@ -737,7 +737,7 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
     if (rv == APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                      "Found SCT for %s in %s",
-                     certFile, sct_fn);
+                     cert_file, sct_fn);
 
         if (finfo.mtime + max_sct_age < apr_time_now()) {
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
@@ -754,10 +754,10 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
                      APR_STATUS_IS_ENOENT(rv) ? 0 : rv,
                      s,
                      "Did not find SCT for %s in %s, must fetch",
-                     certFile, sct_fn);
+                     cert_file, sct_fn);
     }
 
-    rv = submission(s, p, ct_exe, logURL, certFile, sct_fn);
+    rv = submission(s, p, ct_exe, log_url, cert_file, sct_fn);
 
     return rv;
 }
@@ -828,7 +828,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
         char **elts;
         int i;
 
-        rv = readFile(p, s, listfile, MAX_LOGLIST_SIZE, &contents, &contents_size);
+        rv = read_file(p, s, listfile, MAX_LOGLIST_SIZE, &contents, &contents_size);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                          "couldn't read %s", cert_sct_dir);
@@ -1295,7 +1295,7 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
         return rv;
     }
 
-    rv = readFile(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
+    rv = read_file(p, s, sct_fn, MAX_SCTS_SIZE, scts, scts_len);
 
     if ((tmprv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, tmprv, s,
@@ -1387,7 +1387,7 @@ static const unsigned short CT_EXTENSION_TYPE = 18;
  *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
  *   cli_ext_second_cb - receives data from ServerHello TLS Extension
  */
-static int clientExtensionCallback1(SSL *ssl, unsigned short ext_type,
+static int client_extension_callback_1(SSL *ssl, unsigned short ext_type,
                                     const unsigned char **out,
                                     unsigned short *outlen, void *arg)
 {
@@ -1396,14 +1396,14 @@ static int clientExtensionCallback1(SSL *ssl, unsigned short ext_type,
     /* nothing to send in ClientHello */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "clientExtensionCallback1 called, "
+                  "client_extension_callback_1 called, "
                   "ext %hu will be in ClientHello",
                   ext_type);
 
     return 1;
 }
 
-static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
+static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
                                     const unsigned char *in, unsigned short inlen,
                                     int *al, void *arg)
 {
@@ -1412,7 +1412,7 @@ static int clientExtensionCallback2(SSL *ssl, unsigned short ext_type,
     /* need to retrieve SCT(s) from ServerHello (or certificate or stapled response) */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "clientExtensionCallback2 called, "
+                  "client_extension_callback_2 called, "
                   "ext %hu was in ServerHello",
                   ext_type);
     ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from ServerHello",
@@ -1434,7 +1434,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
 #if 0
     if (!peer_cert) {
         ap_log_cerror(APLOG_MARK, APLOG_CRIT, 0, c,
-                      "clientExtensionCallback2 called, no peer cert available!");
+                      "client_extension_callback_2 called, no peer cert available!");
         /* return fatal alert???? */
     }
 
@@ -1451,7 +1451,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     return APR_SUCCESS;
 }
 
-static int serverExtensionCallback1(SSL *ssl, unsigned short ext_type,
+static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
                                     const unsigned char *in,
                                     unsigned short inlen, int *al,
                                     void *arg)
@@ -1464,14 +1464,14 @@ static int serverExtensionCallback1(SSL *ssl, unsigned short ext_type,
     client_is_ct_aware(c);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "serverExtensionCallback1 called, "
+                  "server_extension_callback_1 called, "
                   "ext %hu was in ClientHello (len %hu)",
                   ext_type, inlen);
 
     return 1;
 }
 
-static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
+static int server_extension_callback_2(SSL *ssl, unsigned short ext_type,
                                     const unsigned char **out,
                                     unsigned short *outlen, void *arg)
 {
@@ -1489,7 +1489,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
          * the extension in the ClientHello?  I don't think so.
          */
         ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                      "serverExtensionCallback2: client isn't CT-aware");
+                      "server_extension_callback_2: client isn't CT-aware");
         /* Skip this extension for ServerHello */
         return -1;
     }
@@ -1500,7 +1500,7 @@ static int serverExtensionCallback2(SSL *ssl, unsigned short ext_type,
     fingerprint = get_cert_fingerprint(c->pool, server_cert);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "serverExtensionCallback2 called, "
+                  "server_extension_callback_2 called, "
                   "ext %hu will be in ServerHello",
                   ext_type);
 
@@ -1562,8 +1562,8 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
          * include the CT extension in the ClientHello
          */
         if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE,
-                                        clientExtensionCallback1,
-                                        clientExtensionCallback2, cbi)) {
+                                        client_extension_callback_1,
+                                        client_extension_callback_2, cbi)) {
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
                          "Unable to initalize Certificate Transparency client "
                          "extension callbacks (callback for %d already registered?)",
@@ -1578,8 +1578,8 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
          * include the CT extension in the ServerHello
          */
         if (!SSL_CTX_set_custom_srv_ext(ssl_ctx, CT_EXTENSION_TYPE,
-                                        serverExtensionCallback1,
-                                        serverExtensionCallback2, cbi)) {
+                                        server_extension_callback_1,
+                                        server_extension_callback_2, cbi)) {
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
                          "Unable to initalize Certificate Transparency server "
                          "extension callback (callbacks for %d already registered?)",
