@@ -81,6 +81,8 @@
 #include "apr_signal.h"
 #include "apr_strings.h"
 
+#include "apr_sha1.h"
+
 #include "httpd.h"
 #include "http_config.h"
 #include "http_core.h"
@@ -133,8 +135,10 @@ typedef struct ct_conn_config {
     /* proxy mode only */
     int server_cert_has_sct_list;
     void *cert_sct_list;
+    apr_size_t cert_sct_list_size;
     int serverhello_has_sct_list;
     void *serverhello_sct_list;
+    apr_size_t serverhello_sct_list_size;
 } ct_conn_config;
 
 typedef struct ct_callback_info {
@@ -142,6 +146,10 @@ typedef struct ct_callback_info {
     conn_rec *c;
     ct_conn_config *conncfg;
 } ct_callback_info;
+
+typedef struct ct_cached_server_data {
+    apr_status_t validation_result;
+} ct_cached_server_data;
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
@@ -152,6 +160,8 @@ static apr_global_mutex_t *ssl_ct_sct_update;
 static int refresh_all_scts(server_rec *s_main, apr_pool_t *p);
 
 static apr_thread_t *service_thread;
+
+static apr_hash_t *cached_server_data;
 
 /* from c-t/src/log/ct_extensions.cc */
 static int NID_ctSignedCertificateTimestampList;
@@ -199,6 +209,7 @@ static const char kEmbeddedSCTListLN[] = "X509v3 Certificate Transparency "
 static const char *audit_fn_perm, *audit_fn_active;
 static apr_file_t *audit_file;
 static apr_thread_mutex_t *audit_file_mutex;
+static apr_thread_mutex_t *cached_server_data_mutex;
 
 #ifdef HAVE_SCT_DAEMON
 
@@ -220,7 +231,7 @@ static int daemon_should_exit = 0;
 
 #endif /* HAVE_SCT_DAEMON */
 
-static const char *get_cert_fingerprint(apr_pool_t *p, X509 *x)
+static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
 {
     const EVP_MD *digest;
     unsigned char md[EVP_MAX_MD_SIZE];
@@ -1480,6 +1491,29 @@ static void save_server_data(conn_rec *c, const X509 *peer_cert,
     }
 }
 
+static const char *gen_key(conn_rec *c, const X509 *peer_cert,
+                           ct_conn_config *conncfg)
+{
+    const char *fp;
+    apr_sha1_ctx_t sha1ctx;
+    unsigned char digest[APR_SHA1_DIGESTSIZE];
+
+    fp = get_cert_fingerprint(c->pool, peer_cert);
+
+    apr_sha1_init(&sha1ctx);
+    apr_sha1_update_binary(&sha1ctx, (unsigned char *)fp, strlen(fp));
+    if (conncfg->cert_sct_list) {
+        apr_sha1_update_binary(&sha1ctx, conncfg->cert_sct_list, 
+                               conncfg->cert_sct_list_size);
+    }
+    if (conncfg->serverhello_sct_list) {
+        apr_sha1_update_binary(&sha1ctx, conncfg->serverhello_sct_list,
+                               conncfg->serverhello_sct_list_size);
+    }
+    apr_sha1_final(digest, &sha1ctx);
+    return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
+}
+
 /* XXX
  * perform quick sanity check of server SCT(s) during handshake;
  * errors should result in fatal alert
@@ -1535,6 +1569,7 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
 
     conncfg->serverhello_has_sct_list = 1;
     conncfg->serverhello_sct_list = apr_pmemdup(c->pool, in, inlen);
+    conncfg->serverhello_sct_list_size = inlen;
     return 1;
 }
 
@@ -1543,10 +1578,12 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                                    X509_STORE_CTX *ctx)
 {
     apr_status_t rv;
+    const char *key;
     ct_conn_config *conncfg = get_conn_config(c);
     int chain_size = sk_X509_num(ctx->chain);
     int extension_index;
     X509 *leaf;
+    ct_cached_server_data *cached;
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "ssl_ct_ssl_proxy_verify() - get server certificate info");
@@ -1600,24 +1637,68 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
             conncfg->cert_sct_list = apr_pmemdup(c->pool,
                                                  octet->data,
                                                  octet->length);
+            conncfg->cert_sct_list_size = octet->length;
             ASN1_OCTET_STRING_free(octet);
         }
     }
 
-    rv = validate_server_data(c, leaf, conncfg);
+    /* What allows us to skip revalidating the same thing over and over?
+     * Is there any cheaper check than server cert and SCTs all exactly
+     * the same as before?
+     */
+
+    key = gen_key(c, leaf, conncfg);
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "key for server data: %s", key);
+
+    rv = apr_thread_mutex_lock(cached_server_data_mutex);
+    ap_assert(rv == APR_SUCCESS);
+    cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING);
+    rv = apr_thread_mutex_unlock(cached_server_data_mutex);
+    ap_assert(rv == APR_SUCCESS);
+
+    if (!cached) {
+        apr_status_t tmprv;
+        ct_cached_server_data *new_server_data =
+            (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
+
+        new_server_data->validation_result = 
+            rv = validate_server_data(c, leaf, conncfg);
+
+        tmprv = apr_thread_mutex_lock(cached_server_data_mutex);
+        ap_assert(tmprv == APR_SUCCESS);
+        if ((cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING))) {
+            /* some other thread snuck in
+             * we assume that the other thread got the same validation
+             * result that we did
+             */
+            free(new_server_data);
+            new_server_data = NULL;
+        }
+        else {
+            /* no other thread snuck in */
+            apr_hash_set(cached_server_data, key, APR_HASH_KEY_STRING,
+                         new_server_data);
+            new_server_data = NULL;
+        }
+        tmprv = apr_thread_mutex_unlock(cached_server_data_mutex);
+        ap_assert(tmprv == APR_SUCCESS);
+
+        if (rv == APR_SUCCESS && !cached) {
+            save_server_data(c, leaf, conncfg);
+        }
+    }
 
     X509_free(leaf);
 
-    if (rv == APR_SUCCESS) {
-        save_server_data(c, leaf, conncfg);
-    }
-
     ap_log_cerror(APLOG_MARK,
                   rv == APR_SUCCESS ? APLOG_INFO : APLOG_ERR, rv, c,
-                  "SCT list received in: %s%s%s",
+                  "SCT list received in: %s%s%s(%s)",
                   conncfg->serverhello_has_sct_list ? "ServerHello " : "",
                   conncfg->server_cert_has_sct_list ? "certificate-extension " : "",
-                  ""); /* no logic for stapled response yet */
+                  "", /* no logic for stapled response yet */
+                  cached ? "cached" : "new");
 
     return rv == APR_SUCCESS ? OK : rv;
 }
@@ -1847,6 +1928,8 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
 
+    cached_server_data = apr_hash_make(p);
+
     rv = apr_global_mutex_child_init(&ssl_ct_sct_update,
                                      apr_global_mutex_lockfile(ssl_ct_sct_update), p);
     if (rv != APR_SUCCESS) {
@@ -1868,9 +1951,17 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
 
     rv = apr_thread_mutex_create(&audit_file_mutex, APR_THREAD_MUTEX_DEFAULT,
                                  p);
+    if (rv == APR_SUCCESS) {
+        rv = apr_thread_mutex_create(&cached_server_data_mutex,
+                                     APR_THREAD_MUTEX_DEFAULT,
+                                     p);
+    }
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                     "could not allocate a mutex for the audit file");
+                     "could not allocate a thread mutex");
+        /* might crash due to lack of checking for initialized data in all the
+         * right places
+         */
         return;
     }
 
