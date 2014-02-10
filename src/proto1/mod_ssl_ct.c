@@ -46,8 +46,8 @@
  *   . no way to log CT-awareness of backend server (put it in configurable response
  *     header to allow logging or easy testing from client)
  *   . shouldn't have to read collation of server SCTs on every handshake
- *   . split mod_ssl_ct.c into several pieces once a helpful, minimal Makefile can
- *     be provided
+ *   . split mod_ssl_ct.c into more pieces
+ *   . support building with httpd 2.4.x
  *
  * + Everything else
  *   . ??
