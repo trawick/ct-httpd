@@ -122,6 +122,7 @@ typedef struct ct_server_config {
     apr_array_header_t *log_url_strs;
     apr_array_header_t *cert_files;
     const char *sct_storage;
+    const char *audit_storage;
     const char *ct_tools_dir;
     const char *ct_exe;
     apr_time_t max_sct_age;
@@ -194,6 +195,10 @@ const char kEmbeddedSCTListOID[] = "1.3.6.1.4.1.11129.2.4.2";
 static const char kEmbeddedSCTListSN[] = "ctEmbeddedSCT";
 static const char kEmbeddedSCTListLN[] = "X509v3 Certificate Transparency "
     "Embedded Signed Certificate Timestamp List";
+
+static const char *audit_fn_perm, *audit_fn_active;
+static apr_file_t *audit_file;
+static apr_thread_mutex_t *audit_file_mutex;
 
 #ifdef HAVE_SCT_DAEMON
 
@@ -1329,6 +1334,12 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    if (!sconf->audit_storage) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "Directive CTAuditStorage is required");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
     if (!sconf->ct_tools_dir) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "Directive CTToolsDir is required");
@@ -1456,8 +1467,17 @@ static void server_cert_has_sct_list(conn_rec *c)
  * data over and over.)
  */
 static void save_server_data(conn_rec *c, const X509 *peer_cert,
-                             const char *scts, apr_size_t scts_size)
+                             ct_conn_config *conncfg)
 {
+    apr_status_t rv;
+
+    if (audit_file) { /* child init successful */
+        rv = apr_thread_mutex_lock(audit_file_mutex);
+        ap_assert(rv == APR_SUCCESS);
+
+
+        apr_thread_mutex_unlock(audit_file_mutex);
+    }
 }
 
 /* XXX
@@ -1465,7 +1485,7 @@ static void save_server_data(conn_rec *c, const X509 *peer_cert,
  * errors should result in fatal alert
  */
 static apr_status_t validate_server_data(conn_rec *c, const X509 *peer_cert,
-                                         const char *scts, apr_size_t scts_size)
+                                         ct_conn_config *conncfg)
 {
     return APR_SUCCESS;
 }
@@ -1522,6 +1542,7 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
 static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                                    X509_STORE_CTX *ctx)
 {
+    apr_status_t rv;
     ct_conn_config *conncfg = get_conn_config(c);
     int chain_size = sk_X509_num(ctx->chain);
     int extension_index;
@@ -1583,29 +1604,22 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
         }
     }
 
-#if 0
-    if (!peer_cert) {
-        ap_log_cerror(APLOG_MARK, APLOG_CRIT, 0, c,
-                      "client_extension_callback_2 called, no peer cert available!");
-        /* return fatal alert???? */
+    rv = validate_server_data(c, leaf, conncfg);
+
+    X509_free(leaf);
+
+    if (rv == APR_SUCCESS) {
+        save_server_data(c, leaf, conncfg);
     }
 
-    if (peer_cert) {
-        if (validate_server_data(c, peer_cert, (const char *)in, inlen) != APR_SUCCESS) {
-            /* return fatal alert???? */
-        }
-
-        save_server_data(c, peer_cert, (const char *)in, inlen);
-        X509_free(peer_cert);
-    }
-#endif
-
-    ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c,
+    ap_log_cerror(APLOG_MARK,
+                  rv == APR_SUCCESS ? APLOG_INFO : APLOG_ERR, rv, c,
                   "SCT list received in: %s%s%s",
                   conncfg->serverhello_has_sct_list ? "ServerHello " : "",
                   conncfg->server_cert_has_sct_list ? "certificate-extension " : "",
                   ""); /* no logic for stapled response yet */
-    return OK;
+
+    return rv == APR_SUCCESS ? OK : rv;
 }
 
 static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
@@ -1805,9 +1819,33 @@ static int ssl_ct_pre_config(apr_pool_t *pconf, apr_pool_t *plog,
     return OK;
 }
 
+static apr_status_t inactivate_audit_file(void *data)
+{
+    apr_status_t rv;
+    server_rec *s = data;
+
+    /* the normal cleanup was disabled in the call to apr_file_open */
+    rv = apr_file_close(audit_file);
+    if (rv == APR_SUCCESS) {
+        rv = apr_file_rename(audit_fn_active, audit_fn_perm,
+                             /* not used in current implementations */
+                             s->process->pool);
+    }
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "error flushing/closing %s or renaming it to %s",
+                     audit_fn_active, audit_fn_perm);
+    }
+
+    return APR_SUCCESS; /* what, you think anybody cares? */
+}
+
 static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
 {
     apr_status_t rv;
+    const char *audit_basename;
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
 
     rv = apr_global_mutex_child_init(&ssl_ct_sct_update,
                                      apr_global_mutex_lockfile(ssl_ct_sct_update), p);
@@ -1827,6 +1865,55 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
 
     apr_pool_cleanup_register(p, service_thread, wait_for_service_thread,
                               apr_pool_cleanup_null);
+
+    rv = apr_thread_mutex_create(&audit_file_mutex, APR_THREAD_MUTEX_DEFAULT,
+                                 p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "could not allocate a mutex for the audit file");
+        return;
+    }
+
+    audit_basename = apr_psprintf(p, "audit_%" APR_PID_T_FMT,
+                                  getpid());
+    rv = apr_filepath_merge((char **)&audit_fn_perm, sconf->audit_storage, audit_basename, 0, p);
+    if (rv != APR_SUCCESS) {
+        audit_fn_perm = NULL;
+        audit_fn_active = NULL;
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "could not merge path %s with %s",
+                     sconf->audit_storage, audit_basename);
+        return;
+    }
+
+    audit_fn_active = apr_pstrcat(p, audit_fn_perm, ".tmp", NULL);
+    audit_fn_perm = apr_pstrcat(p, audit_fn_perm, ".out", NULL);
+
+    if (file_exists(p, audit_fn_active)) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
+                     "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
+                     audit_fn_active);
+        apr_file_remove(audit_fn_active, p);
+    }
+
+    if (file_exists(p, audit_fn_perm)) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
+                     "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
+                     audit_fn_perm);
+        apr_file_remove(audit_fn_perm, p);
+    }
+
+    rv = apr_file_open(&audit_file, audit_fn_active,
+                       APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
+                       |APR_FOPEN_BINARY|APR_FOPEN_BUFFERED|APR_FOPEN_NOCLEANUP,
+                       APR_FPROT_OS_DEFAULT, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "can't create %s", audit_fn_active);
+        audit_file = NULL;
+    }
+
+    apr_pool_cleanup_register(p, s, inactivate_audit_file, apr_pool_cleanup_null);
 }
 
 static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
@@ -1852,6 +1939,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
         : base->log_urls;
 
     conf->sct_storage = base->sct_storage;
+    conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
     conf->max_sct_age = base->max_sct_age;
 
@@ -1960,6 +2048,26 @@ static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *ct_audit_storage(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    if (!dir_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool, "CTAuditStorage: Directory ", arg,
+                           " does not exist", NULL);
+    }
+
+    sconf->audit_storage = arg;
+
+    return NULL;
+}
+
 static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
 {
     apr_status_t rv;
@@ -2022,6 +2130,8 @@ static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
 
 static const command_rec ct_cmds[] =
 {
+    AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
+                  "Location to store files of audit data"),
     AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
                       "List of Certificate Transparency Log URLs"),
     AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
