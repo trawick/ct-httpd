@@ -42,8 +42,6 @@
  * + Known low-level code kludges/problems
  *   . no way to log CT-awareness of backend server (put it in configurable response
  *     header to allow logging or easy testing from client)
- *   . no way to automatically get rid of stored sct for log which is no
- *     longer used/respected
  *
  * + Everything else
  *   . ??
