@@ -40,6 +40,8 @@
  *   . ??
  *
  * + Known low-level code kludges/problems
+ *   . proxy can recognize when certificate has SCT list in extension but currently
+ *     fails to extract it
  *   . no way to log CT-awareness of backend server (put it in configurable response
  *     header to allow logging or easy testing from client)
  *   . shouldn't have to read collation of server SCTs on every handshake
@@ -89,6 +91,8 @@
 
 #include "ssl_hooks.h"
 
+#include "openssl/x509v3.h"
+
 #ifdef WIN32
 #define DOTEXE ".exe"
 #else
@@ -124,6 +128,11 @@ typedef struct ct_server_config {
 
 typedef struct ct_conn_config {
     int peer_ct_aware;
+    /* proxy mode only */
+    int server_cert_has_sct_list;
+    void *cert_sct_list;
+    int serverhello_has_sct_list;
+    void *serverhello_sct_list;
 } ct_conn_config;
 
 typedef struct ct_callback_info {
@@ -141,6 +150,49 @@ static apr_global_mutex_t *ssl_ct_sct_update;
 static int refresh_all_scts(server_rec *s_main, apr_pool_t *p);
 
 static apr_thread_t *service_thread;
+
+/* from c-t/src/log/ct_extensions.cc */
+static int NID_ctSignedCertificateTimestampList;
+static int NID_ctEmbeddedSignedCertificateTimestampList;
+static X509V3_EXT_METHOD ct_sctlist_method = {
+    0,  /* ext_nid, NID, will be created by OBJ_create() */
+    0,  /* flags */
+    ASN1_ITEM_ref(ASN1_OCTET_STRING), /* the object is an octet string */
+    0, 0, 0, 0,  /* ignored since the field above is set */
+    /* Create from, and print to, a hex string
+     * Allows to specify the extension configuration like so:
+     * ctSCT = <hexstring_value>
+     * (Unused - we just plumb the bytes in the fake cert directly.)
+     */
+    (X509V3_EXT_I2S)i2s_ASN1_OCTET_STRING,
+    (X509V3_EXT_S2I)s2i_ASN1_OCTET_STRING,
+    0, 0,
+    0, 0,
+    NULL   /* usr_data */
+};
+
+static X509V3_EXT_METHOD ct_embeddedsctlist_method = {
+    0,  /* ext_nid, NID, will be created by OBJ_create() */
+    0,  /* flags */
+    ASN1_ITEM_ref(ASN1_OCTET_STRING), /* the object is an octet string */
+    0, 0, 0, 0,  /* ignored since the field above is set */
+    /* Create from, and print to, a hex string
+     * Allows to specify the extension configuration like so:
+     * ctEmbeddedSCT = <hexstring_value>
+     * (Unused, as we're not issuing certs.)
+     */
+    (X509V3_EXT_I2S)i2s_ASN1_OCTET_STRING,
+    (X509V3_EXT_S2I)s2i_ASN1_OCTET_STRING,
+    0, 0,
+    0, 0,
+    NULL   /* usr_data */
+};
+
+/* The SCT list embedded in the certificate itself */
+const char kEmbeddedSCTListOID[] = "1.3.6.1.4.1.11129.2.4.2";
+static const char kEmbeddedSCTListSN[] = "ctEmbeddedSCT";
+static const char kEmbeddedSCTListLN[] = "X509v3 Certificate Transparency "
+    "Embedded Signed Certificate Timestamp List";
 
 #ifdef HAVE_SCT_DAEMON
 
@@ -1360,7 +1412,7 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
     return OK;
 }
 
-static void client_is_ct_aware(conn_rec *c)
+static ct_conn_config *get_conn_config(conn_rec *c)
 {
     ct_conn_config *conncfg =
       ap_get_module_config(c->conn_config, &ssl_ct_module);
@@ -1370,15 +1422,26 @@ static void client_is_ct_aware(conn_rec *c)
         ap_set_module_config(c->conn_config, &ssl_ct_module, conncfg);
     }
 
+    return conncfg;
+}
+
+static void client_is_ct_aware(conn_rec *c)
+{
+    ct_conn_config *conncfg = get_conn_config(c);
     conncfg->peer_ct_aware = 1;
 }
 
 static int is_client_ct_aware(conn_rec *c)
 {
-    ct_conn_config *conncfg =
-      ap_get_module_config(c->conn_config, &ssl_ct_module);
+    ct_conn_config *conncfg = get_conn_config(c);
 
-    return conncfg && conncfg->peer_ct_aware;
+    return conncfg->peer_ct_aware;
+}
+
+static void server_cert_has_sct_list(conn_rec *c)
+{
+    ct_conn_config *conncfg = get_conn_config(c);
+    conncfg->server_cert_has_sct_list = 1;
 }
 
 /* Look at SSLClient::VerifyCallback() and WriteSSLClientCTData()
@@ -1434,6 +1497,7 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
                                     int *al, void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+    ct_conn_config *conncfg = get_conn_config(c);
 
     /* need to retrieve SCT(s) from ServerHello (or certificate or stapled response) */
 
@@ -1448,14 +1512,75 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
      *       SSL_get_peer_certificate(ssl)
      */
 
+    conncfg->serverhello_has_sct_list = 1;
+    conncfg->serverhello_sct_list = apr_pmemdup(c->pool, in, inlen);
     return 1;
 }
 
+/* See SSLClient::VerifyCallback() in c-t/src/client/ssl_client.cc */
 static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                                    X509_STORE_CTX *ctx)
 {
+    ct_conn_config *conncfg = get_conn_config(c);
+    int chain_size = sk_X509_num(ctx->chain);
+    int extension_index;
+    X509 *leaf;
+
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "ssl_ct_ssl_proxy_verify() - get server certificate info");
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "chain size: %d"
+                  ,
+                  chain_size
+                  );
+
+    if (chain_size < 1) {
+        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                      "odd chain size %d -- cannot proceed", chain_size);
+        return APR_EINVAL;
+    }
+
+    /* Note: SSLClient::Verify looks in both the input chain and the
+     *       verified chain.
+     */
+    leaf = X509_dup(sk_X509_value(ctx->chain, 0));
+    if (!leaf) {
+        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                      "can't get leaf");
+        return APR_EINVAL;
+    }
+
+    extension_index = X509_get_ext_by_NID(leaf, NID_ctEmbeddedSignedCertificateTimestampList, -1);
+    /* use X509_get_ext(leaf, extension_index) to obtain X509_EXTENSION * */
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "Extension for embedded SCT list: %d",
+                  extension_index);
+
+    if (extension_index >= 0) {
+        void *ext_struct;
+        int crit;
+
+        server_cert_has_sct_list(c);
+        /* as in Cert::ExtensionStructure() */
+        ext_struct = X509_get_ext_d2i(leaf,
+                                      NID_ctEmbeddedSignedCertificateTimestampList,
+                                      &crit, NULL);
+
+        if (ext_struct == NULL || crit != -1) {
+            ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                          "Could not retrieve SCT list from certificate (unexpected)");
+        }
+        else {
+            /* as in Cert::OctetStringExtensionData */
+            ASN1_OCTET_STRING *octet = (ASN1_OCTET_STRING *)ext_struct;
+            conncfg->cert_sct_list = apr_pmemdup(c->pool,
+                                                 octet->data,
+                                                 octet->length);
+            ASN1_OCTET_STRING_free(octet);
+        }
+    }
 
 #if 0
     if (!peer_cert) {
@@ -1474,7 +1599,12 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     }
 #endif
 
-    return APR_SUCCESS;
+    ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c,
+                  "SCT list received in: %s%s%s",
+                  conncfg->serverhello_has_sct_list ? "ServerHello " : "",
+                  conncfg->server_cert_has_sct_list ? "certificate extension " : "",
+                  ""); /* no logic for stapled response yet */
+    return OK;
 }
 
 static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
@@ -1632,11 +1762,39 @@ static int ssl_ct_post_read_request(request_rec *r)
     return DECLINED;
 }
 
+/* from LoadCtExtensions() in c-t/src/log/ct_extensions.cc */
+static apr_status_t build_extensions(void)
+{
+    /* NID_ctSignedCertificateTimestampList */
+    ct_sctlist_method.ext_nid = OBJ_create(kEmbeddedSCTListOID,
+                                           kEmbeddedSCTListSN,
+                                           kEmbeddedSCTListLN);
+    ap_assert(ct_sctlist_method.ext_nid != 0);
+    ap_assert(1 == X509V3_EXT_add(&ct_sctlist_method));
+    NID_ctSignedCertificateTimestampList = ct_sctlist_method.ext_nid;
+
+    /* NID_ctEmbeddedSignedCertificateTimestampList; */
+    ct_embeddedsctlist_method.ext_nid = OBJ_create(kEmbeddedSCTListOID,
+                                                 kEmbeddedSCTListSN,
+                                                 kEmbeddedSCTListLN);
+    ap_assert(ct_embeddedsctlist_method.ext_nid != 0);
+    ap_assert(1 == X509V3_EXT_add(&ct_embeddedsctlist_method));
+    NID_ctEmbeddedSignedCertificateTimestampList =
+      ct_embeddedsctlist_method.ext_nid;
+
+    return APR_SUCCESS;
+}
+
 static int ssl_ct_pre_config(apr_pool_t *pconf, apr_pool_t *plog,
                              apr_pool_t *ptemp)
 {
     apr_status_t rv = ap_mutex_register(pconf, SSL_CT_MUTEX_TYPE, NULL,
                                         APR_LOCK_DEFAULT, 0);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    rv = build_extensions();
     if (rv != APR_SUCCESS) {
         return rv;
     }
