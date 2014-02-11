@@ -1380,7 +1380,7 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
     }
 
     if (rv == APR_SUCCESS && avail != 0) {
-        rv = APR_EINVAL;
+        return APR_EINVAL;
     }
 
     return APR_SUCCESS;
@@ -1421,11 +1421,6 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             ap_log_cerror(APLOG_MARK, APLOG_ERR, rv, c,
                           "couldn't deserialize SCT list from certificate");
         }
-        else {
-            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                          "num SCTs: %d (after processing cert)",
-                          conncfg->all_scts->nelts);
-        }
     }
     if (rv == APR_SUCCESS && conncfg->serverhello_sct_list) {
         rv = deserialize_SCTs(p, conncfg, conncfg->serverhello_sct_list,
@@ -1433,11 +1428,6 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
         if (rv != APR_SUCCESS) {
             ap_log_cerror(APLOG_MARK, APLOG_ERR, rv, c,
                           "couldn't deserialize SCT list from ServerHello");
-        }
-        else {
-            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                          "num SCTs: %d (after processing ServerHello)",
-                          conncfg->all_scts->nelts);
         }
     }
 
