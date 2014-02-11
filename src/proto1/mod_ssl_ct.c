@@ -30,6 +30,9 @@
  * + OCSP stapling as a means of delivering SCT(s)
  *   This is completely ignored at present.
  *
+ * + Proxy: how much can we verify each SCT on-line?  Currently we just
+ *   check that we can walk through the SCTs in the list via the length
+ *   fields.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
  *   that facilitates the auditing support in the c-t tools.
  * + Proxy should have a setting that aborts when the backend doesn't send
@@ -1216,7 +1219,7 @@ static void server_cert_has_sct_list(conn_rec *c)
 
 typedef struct cert_chain {
     apr_pool_t *p;
-    apr_array_header_t *arr;
+    apr_array_header_t *cert_arr; /* array of X509 * */
     X509 *leaf;
 } cert_chain;
 
@@ -1231,10 +1234,10 @@ static cert_chain *cert_chain_init(apr_pool_t *p, STACK_OF(X509) *chain)
     cert_chain *cc = apr_pcalloc(p, sizeof(cert_chain));
     int i;
 
-    cc->arr = apr_array_make(p, 4, sizeof(X509 *));
+    cc->cert_arr = apr_array_make(p, 4, sizeof(X509 *));
 
     for (i = 0; i < sk_X509_num(chain); i++) {
-        X509 **spot = apr_array_push(cc->arr);
+        X509 **spot = apr_array_push(cc->cert_arr);
         *spot = X509_dup(sk_X509_value(chain, i));
         if (i == 0) {
             cc->leaf = *spot;
@@ -1245,10 +1248,10 @@ static cert_chain *cert_chain_init(apr_pool_t *p, STACK_OF(X509) *chain)
 }
 
 static void cert_chain_free(cert_chain *cc) {
-    X509 **elts = (X509 **)cc->arr->elts;
+    X509 **elts = (X509 **)cc->cert_arr->elts;
     int i;
 
-    for (i = 0; i < cc->arr->nelts; i++) {
+    for (i = 0; i < cc->cert_arr->nelts; i++) {
         X509_free(elts[i]);
     }
 }
@@ -1386,8 +1389,7 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
     return APR_SUCCESS;
 }
 
-/* XXX
- * perform quick sanity check of server SCT(s) during handshake;
+/* perform quick sanity check of server SCT(s) during handshake;
  * errors should result in fatal alert
  */
 static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
@@ -1447,17 +1449,57 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
 }
 
 /* Enqueue data from server for off-line audit (cert, SCT(s))
- * Make a simple effort to avoid re-enqueueing the same data in
- * order to save space.  (With reverse proxy it will be the same
- * data over and over.)
+ * We already filtered out duplicate data being saved from this
+ * process.  (With reverse proxy it will be the same data over
+ * and over.)
  */
+#define SERVER_START 0x0001
+#define CERT_START   0x0002
+#define SCT_START    0x0003
+
 static void save_server_data(conn_rec *c, cert_chain *cc,
                              ct_conn_config *conncfg)
 {
     if (audit_file) { /* child init successful */
+        apr_size_t bytes_written;
+        apr_status_t rv;
+        int i;
+        ct_sct_data *sct_elts;
         ctutil_thread_mutex_lock(audit_file_mutex);
 
+        /* New data from server */
+        rv = ctutil_file_write_uint16(audit_file, SERVER_START);
+        ap_assert(rv == APR_SUCCESS);
 
+        /* Write each certificate, starting with leaf */
+        for (i = 0; i < cc->cert_arr->nelts; i++) {
+            rv = ctutil_file_write_uint16(audit_file, CERT_START);
+            ap_assert(rv == APR_SUCCESS);
+
+            /* now write the cert!!! */
+            rv = ctutil_file_write_uint16(audit_file, strlen("GARBAGE"));
+            ap_assert(rv == APR_SUCCESS);
+            rv = apr_file_write_full(audit_file, "GARBAGE", strlen("GARBAGE"),
+                                     &bytes_written);
+            ap_assert(rv == APR_SUCCESS);
+        }
+
+        /* Write each SCT */
+        sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
+        for (i = 0; i < conncfg->all_scts->nelts; i++) {
+            ct_sct_data sct;
+
+            rv = ctutil_file_write_uint16(audit_file, SCT_START);
+            ap_assert(rv == APR_SUCCESS);
+
+            /* now write the SCT!!! */
+            sct = sct_elts[i];
+            rv = ctutil_file_write_uint16(audit_file, sct.len);
+            ap_assert(rv == APR_SUCCESS);
+            rv = apr_file_write_full(audit_file, sct.data, sct.len,
+                                     &bytes_written);
+            ap_assert(rv == APR_SUCCESS);
+        }
 
         ctutil_thread_mutex_unlock(audit_file_mutex);
     }
