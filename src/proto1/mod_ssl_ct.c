@@ -30,9 +30,6 @@
  * + OCSP stapling as a means of delivering SCT(s)
  *   This is completely ignored at present.
  *
- * + Are we really sending the SCT(s) correctly?  That needs to be tested in
- *   detail.  But the TLS client used by mod_proxy needs some minimal verification
- *   implemented anyway.
  * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
  *   that facilitates the auditing support in the c-t tools.
  * + Proxy should have a setting that aborts when the backend doesn't send
@@ -139,8 +136,13 @@ typedef struct ct_conn_config {
     int serverhello_has_sct_list;
     void *serverhello_sct_list;
     apr_size_t serverhello_sct_list_size;
-    apr_array_header_t *all_scts;
+    apr_array_header_t *all_scts; /* array of ct_sct_data */
 } ct_conn_config;
+
+typedef struct ct_sct_data {
+    void *data;
+    apr_size_t len;
+} ct_sct_data;
 
 typedef struct ct_callback_info {
     server_rec *s;
@@ -340,6 +342,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     apr_array_header_t *arr;
     apr_status_t rv, tmprv;
     apr_file_t *tmpfile;
+    apr_size_t bytes_written;
+    apr_uint16_t overall_len;
     char *tmp_collated_fn, *collated_fn;
     const char *cur_sct_file;
     const char * const *elts;
@@ -360,11 +364,22 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
     rv = apr_file_open(&tmpfile, tmp_collated_fn,
                        APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
-                       |APR_FOPEN_BINARY|APR_FOPEN_BUFFERED,
+                       |APR_FOPEN_BINARY /* with seek? |APR_FOPEN_BUFFERED */,
                        APR_FPROT_OS_DEFAULT, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                      "can't create %s", tmp_collated_fn);
+        return rv;
+    }
+
+    /* stick a 0 len (for the list) at the start of the file;
+     * we'll have to patch that later
+     */
+    overall_len = 0; /* no byte order considerations */
+    rv = apr_file_write_full(tmpfile, &overall_len, sizeof(overall_len),
+                             &bytes_written);
+    if (rv != APR_SUCCESS) {
+        apr_file_close(tmpfile);
         return rv;
     }
 
@@ -378,7 +393,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
     for (i = 0; i < arr->nelts; i++) {
         char *scts;
-        apr_size_t scts_size, bytes_written;
+        apr_size_t scts_size;;
 
         cur_sct_file = elts[i];
 
@@ -390,12 +405,35 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             break;
         }
 
+        overall_len += scts_size + 2; /* include size header */
+
+        rv = ctutil_file_write_uint16(tmpfile, (apr_uint16_t)scts_size);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "can't write 2-byte length to %s",
+                         tmp_collated_fn);
+            break;
+        }
+
         rv = apr_file_write_full(tmpfile, scts, scts_size, &bytes_written);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                          "can't write %" APR_SIZE_T_FMT " bytes to %s",
                          scts_size, tmp_collated_fn);
             break;
+        }
+    }
+
+    if (rv == APR_SUCCESS) {
+        apr_off_t offset = 0;
+
+        rv = apr_file_seek(tmpfile, APR_SET, &offset);
+        if (rv == APR_SUCCESS) {
+            rv = ctutil_file_write_uint16(tmpfile, overall_len);
+        }
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "could not write the SCT list length at the start of the file");
         }
     }
 
@@ -1238,15 +1276,112 @@ static const char *gen_key(conn_rec *c, cert_chain *cc,
     return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
 }
 
-static apr_status_t deserialize_SCTs(apr_pool_t *p,
-                                     ct_conn_config *conncfg,
-                                     void *sct_list)
+/* all this deserialization crap is of course from
+ * c-t/src/proto/serializer.cc
+ */
+static apr_status_t read_u16(unsigned char **mem, apr_size_t *avail, apr_uint16_t *val)
 {
-    if (!conncfg->all_scts) {
-        conncfg->all_scts = apr_array_make(p, 4, sizeof(void *));
+    int i;
+
+    if (*avail < 2) {
+        return APR_EINVAL;
     }
 
-    /* XXX add them to the all_scts array */
+    *val = 0;
+
+    for (i = 0; i < sizeof(*val); i++) {
+        *val = (*val << 8) | **mem;
+        *mem += 1;
+        *avail -= 1;
+    }
+
+    return APR_SUCCESS;
+}
+
+static apr_status_t read_length_prefix(unsigned char **mem, apr_size_t *avail,
+                                       apr_size_t *result)
+{
+    apr_status_t rv;
+    apr_uint16_t val;
+
+    rv = read_u16(mem, avail, &val);
+    if (rv == APR_SUCCESS) {
+        *result = val;
+    }
+
+    return rv;
+}
+
+static apr_status_t read_fixed_bytes(unsigned char **mem, apr_size_t *avail,
+                                     apr_size_t len,
+                                     unsigned char **start)
+{
+    if (*avail < len) {
+        return APR_EINVAL;
+    }
+
+    *start = *mem;
+    *avail -= len;
+    *mem += len;
+
+    return APR_SUCCESS;
+}
+
+static apr_status_t read_var_bytes(unsigned char **mem, apr_size_t *avail,
+                                   unsigned char **start, apr_size_t *len)
+{
+    apr_status_t rv;
+
+    rv = read_length_prefix(mem, avail, len);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    rv = read_fixed_bytes(mem, avail, *len, start);
+    return rv;
+}
+
+static apr_status_t deserialize_SCTs(apr_pool_t *p,
+                                     ct_conn_config *conncfg,
+                                     void *sct_list,
+                                     apr_size_t sct_list_size)
+{
+    apr_size_t avail, len_of_data;
+    apr_status_t rv;
+    unsigned char *mem, *start_of_data;
+
+    mem = sct_list;
+    avail = sct_list_size;
+
+    /* Make sure the overall length is correct */
+
+    rv = read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    if (len_of_data + sizeof(apr_uint16_t) != sct_list_size) {
+        return APR_EINVAL;
+    }
+
+    /* add each SCT in the list to the all_scts array */
+
+    mem = (unsigned char *)sct_list + sizeof(apr_uint16_t);
+    avail = sct_list_size - sizeof(apr_uint16_t);
+
+    while (rv == APR_SUCCESS && avail > 0) {
+        rv = read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
+        if (rv == APR_SUCCESS) {
+            ct_sct_data *sct = (ct_sct_data *)apr_array_push(conncfg->all_scts);
+
+            sct->data = start_of_data;
+            sct->len = len_of_data;
+        }
+    }
+
+    if (rv == APR_SUCCESS && avail != 0) {
+        rv = APR_EINVAL;
+    }
 
     return APR_SUCCESS;
 }
@@ -1260,12 +1395,50 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
 {
     apr_status_t rv = APR_SUCCESS;
 
+    if (conncfg->serverhello_sct_list) {
+        ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from ServerHello",
+                     conncfg->serverhello_sct_list,
+                     conncfg->serverhello_sct_list_size,
+                     AP_LOG_DATA_SHOW_OFFSET);
+    }
+
+    if (conncfg->cert_sct_list) {
+        ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from certificate",
+                     conncfg->cert_sct_list,
+                     conncfg->cert_sct_list_size,
+                     AP_LOG_DATA_SHOW_OFFSET);
+    }
+
+    if (!conncfg->all_scts) {
+        conncfg->all_scts = apr_array_make(p, 4, sizeof(ct_sct_data));
+    }
+
     /* deserialize all the SCTs */
     if (conncfg->cert_sct_list) {
-        rv = deserialize_SCTs(p, conncfg, conncfg->cert_sct_list);
+        rv = deserialize_SCTs(p, conncfg, conncfg->cert_sct_list,
+                              conncfg->cert_sct_list_size);
+        if (rv != APR_SUCCESS) {
+            ap_log_cerror(APLOG_MARK, APLOG_ERR, rv, c,
+                          "couldn't deserialize SCT list from certificate");
+        }
+        else {
+            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                          "num SCTs: %d (after processing cert)",
+                          conncfg->all_scts->nelts);
+        }
     }
     if (rv == APR_SUCCESS && conncfg->serverhello_sct_list) {
-        rv = deserialize_SCTs(p, conncfg, conncfg->serverhello_sct_list);
+        rv = deserialize_SCTs(p, conncfg, conncfg->serverhello_sct_list,
+                              conncfg->serverhello_sct_list_size);
+        if (rv != APR_SUCCESS) {
+            ap_log_cerror(APLOG_MARK, APLOG_ERR, rv, c,
+                          "couldn't deserialize SCT list from ServerHello");
+        }
+        else {
+            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                          "num SCTs: %d (after processing ServerHello)",
+                          conncfg->all_scts->nelts);
+        }
     }
 
     if (rv == APR_SUCCESS) {
@@ -1273,6 +1446,10 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             ap_log_cerror(APLOG_MARK, APLOG_CRIT, 0, c,
                           "SNAFU: No deserialized SCTs found in validate_server_data()");
             rv = APR_EINVAL;
+        }
+        else {
+            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                          "%d SCTs received total", conncfg->all_scts->nelts);
         }
     }
 
@@ -1332,8 +1509,6 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
                   "client_extension_callback_2 called, "
                   "ext %hu was in ServerHello",
                   ext_type);
-    ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from ServerHello",
-                 in, inlen, AP_LOG_DATA_SHOW_OFFSET);
 
     /* Note: Peer certificate is not available in this callback via
      *       SSL_get_peer_certificate(ssl)
@@ -1451,7 +1626,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                 (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
 
             new_server_data->validation_result = 
-              rv = validate_server_data(p, c, certs, conncfg);
+                rv = validate_server_data(p, c, certs, conncfg);
 
             ctutil_thread_mutex_lock(cached_server_data_mutex);
 
@@ -1475,6 +1650,10 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
             if (rv == APR_SUCCESS && !cached) {
                 save_server_data(c, certs, conncfg);
             }
+        }
+        else {
+            /* cached */
+            rv = cached->validation_result;
         }
     }
     else {

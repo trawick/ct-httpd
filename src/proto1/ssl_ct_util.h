@@ -52,4 +52,7 @@ apr_status_t ctutil_run_to_log(apr_pool_t *p,
 void ctutil_thread_mutex_lock(apr_thread_mutex_t *m);
 void ctutil_thread_mutex_unlock(apr_thread_mutex_t *m);
 
+apr_status_t ctutil_file_write_uint16(apr_file_t *f,
+                                      apr_uint16_t val);
+
 #endif /* SSL_CT_UTIL_H */
