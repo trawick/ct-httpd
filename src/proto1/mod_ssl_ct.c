@@ -139,6 +139,7 @@ typedef struct ct_conn_config {
     int serverhello_has_sct_list;
     void *serverhello_sct_list;
     apr_size_t serverhello_sct_list_size;
+    apr_array_header_t *all_scts;
 } ct_conn_config;
 
 typedef struct ct_callback_info {
@@ -1175,31 +1176,53 @@ static void server_cert_has_sct_list(conn_rec *c)
  * the c-t tools can use.
  */
 
-/* Enqueue data from server for off-line audit (cert, SCT(s))
- * Make a simple effort to avoid re-enqueueing the same data in
- * order to save space.  (With reverse proxy it will be the same
- * data over and over.)
- */
-static void save_server_data(conn_rec *c, const X509 *peer_cert,
-                             ct_conn_config *conncfg)
+typedef struct cert_chain {
+    apr_pool_t *p;
+    apr_array_header_t *arr;
+    X509 *leaf;
+} cert_chain;
+
+/*
+static X509 *cert_chain_get(cert_chain *cc, int i)
 {
-    if (audit_file) { /* child init successful */
-        ctutil_thread_mutex_lock(audit_file_mutex);
+}
+*/
 
+static cert_chain *cert_chain_init(apr_pool_t *p, STACK_OF(X509) *chain)
+{
+    cert_chain *cc = apr_pcalloc(p, sizeof(cert_chain));
+    int i;
 
+    cc->arr = apr_array_make(p, 4, sizeof(X509 *));
 
-        ctutil_thread_mutex_unlock(audit_file_mutex);
+    for (i = 0; i < sk_X509_num(chain); i++) {
+        X509 **spot = apr_array_push(cc->arr);
+        *spot = X509_dup(sk_X509_value(chain, i));
+        if (i == 0) {
+            cc->leaf = *spot;
+        }
+    }
+
+    return cc;
+}
+
+static void cert_chain_free(cert_chain *cc) {
+    X509 **elts = (X509 **)cc->arr->elts;
+    int i;
+
+    for (i = 0; i < cc->arr->nelts; i++) {
+        X509_free(elts[i]);
     }
 }
 
-static const char *gen_key(conn_rec *c, const X509 *peer_cert,
+static const char *gen_key(conn_rec *c, cert_chain *cc,
                            ct_conn_config *conncfg)
 {
     const char *fp;
     apr_sha1_ctx_t sha1ctx;
     unsigned char digest[APR_SHA1_DIGESTSIZE];
 
-    fp = get_cert_fingerprint(c->pool, peer_cert);
+    fp = get_cert_fingerprint(c->pool, cc->leaf);
 
     apr_sha1_init(&sha1ctx);
     apr_sha1_update_binary(&sha1ctx, (unsigned char *)fp, strlen(fp));
@@ -1215,14 +1238,62 @@ static const char *gen_key(conn_rec *c, const X509 *peer_cert,
     return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
 }
 
+static apr_status_t deserialize_SCTs(apr_pool_t *p,
+                                     ct_conn_config *conncfg,
+                                     void *sct_list)
+{
+    if (!conncfg->all_scts) {
+        conncfg->all_scts = apr_array_make(p, 4, sizeof(void *));
+    }
+
+    /* XXX add them to the all_scts array */
+
+    return APR_SUCCESS;
+}
+
 /* XXX
  * perform quick sanity check of server SCT(s) during handshake;
  * errors should result in fatal alert
  */
-static apr_status_t validate_server_data(conn_rec *c, const X509 *peer_cert,
-                                         ct_conn_config *conncfg)
+static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
+                                         cert_chain *cc, ct_conn_config *conncfg)
 {
-    return APR_SUCCESS;
+    apr_status_t rv = APR_SUCCESS;
+
+    /* deserialize all the SCTs */
+    if (conncfg->cert_sct_list) {
+        rv = deserialize_SCTs(p, conncfg, conncfg->cert_sct_list);
+    }
+    if (rv == APR_SUCCESS && conncfg->serverhello_sct_list) {
+        rv = deserialize_SCTs(p, conncfg, conncfg->serverhello_sct_list);
+    }
+
+    if (rv == APR_SUCCESS) {
+        if (conncfg->all_scts->nelts < 1) {
+            ap_log_cerror(APLOG_MARK, APLOG_CRIT, 0, c,
+                          "SNAFU: No deserialized SCTs found in validate_server_data()");
+            rv = APR_EINVAL;
+        }
+    }
+
+    return rv;
+}
+
+/* Enqueue data from server for off-line audit (cert, SCT(s))
+ * Make a simple effort to avoid re-enqueueing the same data in
+ * order to save space.  (With reverse proxy it will be the same
+ * data over and over.)
+ */
+static void save_server_data(conn_rec *c, cert_chain *cc,
+                             ct_conn_config *conncfg)
+{
+    if (audit_file) { /* child init successful */
+        ctutil_thread_mutex_lock(audit_file_mutex);
+
+
+
+        ctutil_thread_mutex_unlock(audit_file_mutex);
+    }
 }
 
 /* signed_certificate_timestamp */
@@ -1274,17 +1345,26 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
     return 1;
 }
 
-/* See SSLClient::VerifyCallback() in c-t/src/client/ssl_client.cc */
+/* See SSLClient::VerifyCallback() in c-t/src/client/ssl_client.cc
+ * (That's a beast and hard to duplicate in depth when you consider
+ * all the support classes it relies on; mod_ssl_ct needs to be a
+ * C++ module so that the bugs are fixed in one place.)
+ *
+ * . This code should care about stapled SCTs but doesn't.
+ * . This code, unlike SSLClient::VerifyCallback(), doesn't look
+ *   at the OpenSSL "input" chain.
+ */
 static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                                    X509_STORE_CTX *ctx)
 {
+    apr_pool_t *p = c->pool;
     apr_status_t rv;
     const char *key;
     ct_conn_config *conncfg = get_conn_config(c);
     int chain_size = sk_X509_num(ctx->chain);
     int extension_index;
-    X509 *leaf;
     ct_cached_server_data *cached;
+    cert_chain *certs;
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "ssl_ct_ssl_proxy_verify() - get server certificate info");
@@ -1304,15 +1384,14 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     /* Note: SSLClient::Verify looks in both the input chain and the
      *       verified chain.
      */
-    leaf = X509_dup(sk_X509_value(ctx->chain, 0));
-    if (!leaf) {
-        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
-                      "can't get leaf");
-        return APR_EINVAL;
-    }
 
-    extension_index = X509_get_ext_by_NID(leaf, NID_ctEmbeddedSignedCertificateTimestampList, -1);
-    /* use X509_get_ext(leaf, extension_index) to obtain X509_EXTENSION * */
+    certs = cert_chain_init(p, ctx->chain);
+
+    extension_index = 
+        X509_get_ext_by_NID(certs->leaf,
+                            NID_ctEmbeddedSignedCertificateTimestampList,
+                            -1);
+    /* use X509_get_ext(certs->leaf, extension_index) to obtain X509_EXTENSION * */
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "Extension for embedded SCT list: %d",
@@ -1323,7 +1402,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
 
         server_cert_has_sct_list(c);
         /* as in Cert::ExtensionStructure() */
-        ext_struct = X509_get_ext_d2i(leaf,
+        ext_struct = X509_get_ext_d2i(certs->leaf,
                                       NID_ctEmbeddedSignedCertificateTimestampList,
                                       NULL, /* ignore criticality of extension */
                                       NULL);
@@ -1335,7 +1414,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
         else {
             /* as in Cert::OctetStringExtensionData */
             ASN1_OCTET_STRING *octet = (ASN1_OCTET_STRING *)ext_struct;
-            conncfg->cert_sct_list = apr_pmemdup(c->pool,
+            conncfg->cert_sct_list = apr_pmemdup(p,
                                                  octet->data,
                                                  octet->length);
             conncfg->cert_sct_list_size = octet->length;
@@ -1343,54 +1422,66 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
         }
     }
 
-    /* What allows us to skip revalidating the same thing over and over?
-     * Is there any cheaper check than server cert and SCTs all exactly
-     * the same as before?
+    /* At this point we have the SCTs from the cert (if any) and the
+     * SCTs from the TLS extension (if any) in ct_conn_config.
      */
 
-    key = gen_key(c, leaf, conncfg);
+    if (conncfg->cert_sct_list || !conncfg->serverhello_sct_list) {
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "key for server data: %s", key);
+        /* The key is critical to avoiding validating and queueing of
+         * the same stuff over and over.
+         *
+         * Is there any cheaper check than server cert and SCTs all exactly
+         * the same as before?
+         */
+        
+        key = gen_key(c, certs, conncfg);
 
-    ctutil_thread_mutex_lock(cached_server_data_mutex);
-
-    cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING);
-
-    ctutil_thread_mutex_unlock(cached_server_data_mutex);
-
-    if (!cached) {
-        ct_cached_server_data *new_server_data =
-            (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
-
-        new_server_data->validation_result = 
-            rv = validate_server_data(c, leaf, conncfg);
+        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                      "key for server data: %s", key);
 
         ctutil_thread_mutex_lock(cached_server_data_mutex);
 
-        if ((cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING))) {
-            /* some other thread snuck in
-             * we assume that the other thread got the same validation
-             * result that we did
-             */
-            free(new_server_data);
-            new_server_data = NULL;
-        }
-        else {
-            /* no other thread snuck in */
-            apr_hash_set(cached_server_data, key, APR_HASH_KEY_STRING,
-                         new_server_data);
-            new_server_data = NULL;
-        }
+        cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING);
 
         ctutil_thread_mutex_unlock(cached_server_data_mutex);
 
-        if (rv == APR_SUCCESS && !cached) {
-            save_server_data(c, leaf, conncfg);
+        if (!cached) {
+            ct_cached_server_data *new_server_data =
+                (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
+
+            new_server_data->validation_result = 
+              rv = validate_server_data(p, c, certs, conncfg);
+
+            ctutil_thread_mutex_lock(cached_server_data_mutex);
+
+            if ((cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING))) {
+                /* some other thread snuck in
+                 * we assume that the other thread got the same validation
+                 * result that we did
+                 */
+                free(new_server_data);
+                new_server_data = NULL;
+            }
+            else {
+                /* no other thread snuck in */
+                apr_hash_set(cached_server_data, key, APR_HASH_KEY_STRING,
+                             new_server_data);
+                new_server_data = NULL;
+            }
+
+            ctutil_thread_mutex_unlock(cached_server_data_mutex);
+
+            if (rv == APR_SUCCESS && !cached) {
+                save_server_data(c, certs, conncfg);
+            }
         }
     }
+    else {
+        /* No SCTs at all; consult configuration to know what to do. */
+    }
 
-    X509_free(leaf);
+    cert_chain_free(certs);
 
     ap_log_cerror(APLOG_MARK,
                   rv == APR_SUCCESS ? APLOG_INFO : APLOG_ERR, rv, c,
