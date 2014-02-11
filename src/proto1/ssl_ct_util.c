@@ -324,3 +324,16 @@ apr_status_t ctutil_run_to_log(apr_pool_t *p,
 
     return rv;
 }
+
+void ctutil_thread_mutex_lock(apr_thread_mutex_t *m)
+{
+    apr_status_t rv = apr_thread_mutex_lock(m);
+    ap_assert(rv == APR_SUCCESS);
+}
+
+void ctutil_thread_mutex_unlock(apr_thread_mutex_t *m)
+{
+    apr_status_t rv = apr_thread_mutex_unlock(m);
+    ap_assert(rv == APR_SUCCESS);
+}
+

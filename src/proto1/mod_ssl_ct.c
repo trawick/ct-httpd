@@ -1183,14 +1183,12 @@ static void server_cert_has_sct_list(conn_rec *c)
 static void save_server_data(conn_rec *c, const X509 *peer_cert,
                              ct_conn_config *conncfg)
 {
-    apr_status_t rv;
-
     if (audit_file) { /* child init successful */
-        rv = apr_thread_mutex_lock(audit_file_mutex);
-        ap_assert(rv == APR_SUCCESS);
+        ctutil_thread_mutex_lock(audit_file_mutex);
 
 
-        apr_thread_mutex_unlock(audit_file_mutex);
+
+        ctutil_thread_mutex_unlock(audit_file_mutex);
     }
 }
 
@@ -1355,22 +1353,21 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "key for server data: %s", key);
 
-    rv = apr_thread_mutex_lock(cached_server_data_mutex);
-    ap_assert(rv == APR_SUCCESS);
+    ctutil_thread_mutex_lock(cached_server_data_mutex);
+
     cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING);
-    rv = apr_thread_mutex_unlock(cached_server_data_mutex);
-    ap_assert(rv == APR_SUCCESS);
+
+    ctutil_thread_mutex_unlock(cached_server_data_mutex);
 
     if (!cached) {
-        apr_status_t tmprv;
         ct_cached_server_data *new_server_data =
             (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
 
         new_server_data->validation_result = 
             rv = validate_server_data(c, leaf, conncfg);
 
-        tmprv = apr_thread_mutex_lock(cached_server_data_mutex);
-        ap_assert(tmprv == APR_SUCCESS);
+        ctutil_thread_mutex_lock(cached_server_data_mutex);
+
         if ((cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING))) {
             /* some other thread snuck in
              * we assume that the other thread got the same validation
@@ -1385,8 +1382,8 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                          new_server_data);
             new_server_data = NULL;
         }
-        tmprv = apr_thread_mutex_unlock(cached_server_data_mutex);
-        ap_assert(tmprv == APR_SUCCESS);
+
+        ctutil_thread_mutex_unlock(cached_server_data_mutex);
 
         if (rv == APR_SUCCESS && !cached) {
             save_server_data(c, leaf, conncfg);

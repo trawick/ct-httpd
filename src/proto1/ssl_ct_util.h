@@ -49,4 +49,7 @@ apr_status_t ctutil_run_to_log(apr_pool_t *p,
                                const char *args[8],
                                const char *desc_for_log);
 
+void ctutil_thread_mutex_lock(apr_thread_mutex_t *m);
+void ctutil_thread_mutex_unlock(apr_thread_mutex_t *m);
+
 #endif /* SSL_CT_UTIL_H */
