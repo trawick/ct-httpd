@@ -48,3 +48,12 @@ what looks like a build nightmare.
 ```
 * If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate under CTSCTStorage.  (The SHA1 digest of the server certificate is the directory name.)
 * The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
+
+### Support for off-line auditing of SCTs received by the proxy from servers
+
+* httpd processes queue the server certificate chain and SCTs in a file called audit\_\<PID\>.tmp in the CTAuditStorage directory.  These are flushed and renamed to audit\_\<PID\>.out when the child process exits (MaxConnectionsPerChild, load subsides, restart, stop).
+* The off-line audit procedure should move the .out files elsewhere and audit the contents.
+* The file contains a series of elements for each server: SERVER_START (0x0001), certificate data (leaf first followed by any intermediate certificates), and SCT data.
+* Each certificate is represented by CERT_START (0x0002) and two-byte length followed by the certificate in DER.
+* Each SCT is represented by SCT_START (0x0003) and two-byte length followed by the SCT.
+
