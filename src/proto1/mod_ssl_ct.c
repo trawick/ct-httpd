@@ -501,14 +501,9 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
                                const apr_uri_t *log_url, const char *cert_file,
                                const char *sct_fn)
 {
-    apr_pollfd_t pfd = {0};
-    apr_pollset_t *pollset;
-    apr_proc_t proc = {0};
-    apr_procattr_t *attr;
     apr_status_t rv;
-    apr_exit_why_e exitwhy;
     const char *args[8];
-    int exitcode, fds_waiting, i;
+    int i;
 
     i = 0;
     args[i++] = ct_exe;
@@ -521,96 +516,7 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
     args[i++] = NULL;
     ap_assert(i == sizeof args / sizeof args[0]);
 
-    rv = apr_procattr_create(&attr, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_create failed");
-        return rv;
-    }
-
-    rv = apr_procattr_io_set(attr,
-                             APR_NO_PIPE,
-                             APR_CHILD_BLOCK,
-                             APR_CHILD_BLOCK);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_io_set failed");
-        return rv;
-    }
-
-    rv = apr_proc_create(&proc, ct_exe, args, NULL, attr, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_proc_create failed");
-        return rv;
-    }
-
-#if APR_FILES_AS_SOCKETS
-    rv = apr_pollset_create(&pollset, 2, p, 0);
-    ap_assert(rv == APR_SUCCESS);
-
-    fds_waiting = 0;
-
-    pfd.p = p;
-    pfd.desc_type = APR_POLL_FILE;
-    pfd.reqevents = APR_POLLIN;
-    pfd.desc.f = proc.err;
-    rv = apr_pollset_add(pollset, &pfd);
-    ap_assert(rv == APR_SUCCESS);
-    ++fds_waiting;
-
-    pfd.desc.f = proc.out;
-    rv = apr_pollset_add(pollset, &pfd);
-    ap_assert(rv == APR_SUCCESS);
-    ++fds_waiting;
-
-    while (fds_waiting) {
-        int i, num_events;
-        const apr_pollfd_t *pdesc;
-        char buf[4096];
-        apr_size_t len;
-
-        rv = apr_pollset_poll(pollset, apr_time_from_sec(1),
-                              &num_events, &pdesc);
-        if (rv != APR_SUCCESS && !APR_STATUS_IS_EINTR(rv)) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "apr_pollset_poll");
-            break;
-        }
-
-        for (i = 0; i < num_events; i++) {
-            len = sizeof buf;
-            rv = apr_file_read(pdesc[i].desc.f, buf, &len);
-            if (APR_STATUS_IS_EOF(rv)) {
-                apr_file_close(pdesc[i].desc.f);
-                apr_pollset_remove(pollset, &pdesc[i]);
-                --fds_waiting;
-            }
-            else if (rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                             "apr_file_read");
-            }
-            else {
-                ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, s,
-                             "log client: %.*s", (int)len, buf);
-            }
-        }
-    }
-#else
-#error Implement a different type of I/O loop for Windows.
-    /* See mod_ext_filter for code for !APR_FILES_AS_SOCKETS which
-     * services two pipes using a timeout and non-blocking handles.
-     */
-#endif
-
-    rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
-    rv = rv == APR_CHILD_DONE ? APR_SUCCESS : rv;
-
-    ap_log_error(APLOG_MARK,
-                 rv != APR_SUCCESS || exitcode ? APLOG_ERR : APLOG_DEBUG,
-                 rv, s,
-                 "->exit code %d  exitwhy %d", exitcode, exitwhy);
-
-    if (rv == APR_SUCCESS && exitcode) {
-        rv = APR_EGENERAL;
-    }
+    rv = ctutil_run_to_log(p, s, args, "log client");
 
     return rv;
 }

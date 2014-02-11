@@ -44,4 +44,9 @@ apr_status_t ctutil_read_file(apr_pool_t *p,
                               char **contents,
                               apr_size_t *contents_size);
 
+apr_status_t ctutil_run_to_log(apr_pool_t *p,
+                               server_rec *s,
+                               const char *args[8],
+                               const char *desc_for_log);
+
 #endif /* SSL_CT_UTIL_H */
