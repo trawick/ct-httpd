@@ -340,17 +340,17 @@ void ctutil_thread_mutex_unlock(apr_thread_mutex_t *m)
 apr_status_t ctutil_file_write_uint16(apr_file_t *f,
                                       apr_uint16_t in_val)
 {
-    apr_size_t bytes_written;
+    apr_size_t nbytes;
     apr_status_t rv;
     unsigned char val;
 
     val = (in_val & 0xFF00) >> 8;
-    rv = apr_file_write_full(f, &val, sizeof(val),
-                             &bytes_written);
+    nbytes = sizeof(val);
+    rv = apr_file_write(f, &val, &nbytes);
     if (rv == APR_SUCCESS) {
         val = (in_val & 0x00FF);
-        rv = apr_file_write_full(f, &val, sizeof(val),
-                                 &bytes_written);
+        nbytes = sizeof(val);
+        rv = apr_file_write(f, &val, &nbytes);
     }
     return rv;
 }
