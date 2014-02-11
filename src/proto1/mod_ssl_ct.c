@@ -33,8 +33,6 @@
  * + Proxy: how much can we verify each SCT on-line?  Currently we just
  *   check that we can walk through the SCTs in the list via the length
  *   fields.
- * + Proxy flow should queue the server cert and SCT(s) for audit in a manner
- *   that facilitates the auditing support in the c-t tools.
  * + Proxy should have a setting that aborts when the backend doesn't send
  *   an SCT.  (It must recognize when one is delivered with the certificate
  *   or via OCSP stapling.)
@@ -1465,6 +1463,7 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
         apr_status_t rv;
         int i;
         ct_sct_data *sct_elts;
+        X509 **x509elts;
         ctutil_thread_mutex_lock(audit_file_mutex);
 
         /* New data from server */
@@ -1472,16 +1471,26 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
         ap_assert(rv == APR_SUCCESS);
 
         /* Write each certificate, starting with leaf */
+        x509elts = (X509 **)cc->cert_arr->elts;
         for (i = 0; i < cc->cert_arr->nelts; i++) {
+            unsigned char *der_buf = NULL;
+            int der_length;
+
             rv = ctutil_file_write_uint16(audit_file, CERT_START);
             ap_assert(rv == APR_SUCCESS);
 
             /* now write the cert!!! */
-            rv = ctutil_file_write_uint16(audit_file, strlen("GARBAGE"));
+
+            der_length = i2d_X509(x509elts[i], &der_buf);
+            ap_assert(der_length > 0);
+
+            rv = ctutil_file_write_uint16(audit_file, der_length);
             ap_assert(rv == APR_SUCCESS);
-            rv = apr_file_write_full(audit_file, "GARBAGE", strlen("GARBAGE"),
+            rv = apr_file_write_full(audit_file, der_buf, der_length,
                                      &bytes_written);
             ap_assert(rv == APR_SUCCESS);
+
+            OPENSSL_free(der_buf);
         }
 
         /* Write each SCT */
