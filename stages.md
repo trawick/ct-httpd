@@ -14,7 +14,7 @@ Development Stages for CT in httpd
 
 ## Implementation shortcuts
 
-* Proxy (TLS client): Don't check for SCTs in OCSP responses.
+* Proxy (TLS client): Don't check for SCTs in OCSP responses.  (Currently mod\_ssl\_ct notices when there is a stapled OCSP response, but it doesn't yet know how to find any SCTs there.)
 * Add any necessary hooks to mod\_ssl to minimize collision with other
 active development, and implement new program logic in mod\_ssl\_ct.
 * mod\_ssl\_ct will use certificate-transparency project **executable
