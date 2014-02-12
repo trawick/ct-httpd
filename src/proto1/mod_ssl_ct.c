@@ -1810,11 +1810,7 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
     cbi->s = s;
 
     if (is_proxy) {
-        /* _cli_ = "client"
-         *
-         * Even though the callbacks don't do anything, this is sufficient to
-         * include the CT extension in the ClientHello
-         */
+        /* _cli_ = "client" */
         if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         client_extension_callback_1,
                                         client_extension_callback_2, cbi)) {
@@ -1826,11 +1822,7 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
         }
     }
     else {
-        /* _srv_ = "server"
-         *
-         * Even though the callbacks don't do anything, this is sufficient to
-         * include the CT extension in the ServerHello
-         */
+        /* _srv_ = "server" */
         if (!SSL_CTX_set_custom_srv_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         server_extension_callback_1,
                                         server_extension_callback_2, cbi)) {
