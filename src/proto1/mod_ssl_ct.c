@@ -93,6 +93,7 @@
 #include "ssl_ct_util.h"
 
 #include "openssl/x509v3.h"
+#include "openssl/ocsp.h"
 
 #ifdef WIN32
 #define DOTEXE ".exe"
@@ -1518,6 +1519,36 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
 /* signed_certificate_timestamp */
 static const unsigned short CT_EXTENSION_TYPE = 18;
 
+/* See function of this name in openssl/apps/s_client.c */
+static int ocsp_resp_cb(SSL *ssl, void *arg)
+{
+    conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+    const unsigned char *p;
+    int len;
+    OCSP_RESPONSE *rsp;
+
+    len = SSL_get_tlsext_status_ocsp_resp(ssl, &p);
+    if (!p) {
+        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                      "OCSP response callback called but no response found");
+        return 1;
+    }
+
+    rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
+    if (!rsp) {
+        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                      "Error parsing OCSP response");
+        return 0;
+    }
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "Got OCSP response (don't know how to search it for OID 1.3.6.1.4.1.11129.2.4.5)");
+
+    OCSP_RESPONSE_free(rsp);
+
+    return 1;
+}
+
 /* Callbacks and structures for handling custom TLS Extensions:
  *   cli_ext_first_cb  - sends data for ClientHello TLS Extension
  *   cli_ext_second_cb - receives data from ServerHello TLS Extension
@@ -1793,6 +1824,8 @@ static int ssl_ct_ssl_new_client_pre_handshake(server_rec *s, conn_rec *c, SSL *
 {
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "client connected (pre-handshake)");
 
+    SSL_set_tlsext_status_type(ssl, TLSEXT_STATUSTYPE_ocsp);
+
     /* This callback is needed only to determine that the peer is CT-aware
      * when resuming a session.  For an initial handshake, the callbacks
      * registered via SSL_CTX_set_custom_srv_ext() are sufficient.
@@ -1820,6 +1853,13 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
                          CT_EXTENSION_TYPE);
             return HTTP_INTERNAL_SERVER_ERROR;
         }
+
+        /* Uhh, hopefully this doesn't collide with anybody else.  mod_ssl
+         * currently only sets this on the server SSL_CTX, when OCSP is
+         * enabled.
+         */
+        SSL_CTX_set_tlsext_status_cb(ssl_ctx, ocsp_resp_cb);
+        SSL_CTX_set_tlsext_status_arg(ssl_ctx, cbi);
     }
     else {
         /* _srv_ = "server" */
