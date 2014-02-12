@@ -337,20 +337,21 @@ void ctutil_thread_mutex_unlock(apr_thread_mutex_t *m)
     ap_assert(rv == APR_SUCCESS);
 }
 
-apr_status_t ctutil_file_write_uint16(apr_file_t *f,
+apr_status_t ctutil_file_write_uint16(server_rec *s,
+                                      apr_file_t *f,
                                       apr_uint16_t in_val)
 {
     apr_size_t nbytes;
     apr_status_t rv;
-    unsigned char val;
+    char vals[2];
 
-    val = (in_val & 0xFF00) >> 8;
-    nbytes = sizeof(val);
-    rv = apr_file_write(f, &val, &nbytes);
-    if (rv == APR_SUCCESS) {
-        val = (in_val & 0x00FF);
-        nbytes = sizeof(val);
-        rv = apr_file_write(f, &val, &nbytes);
+    vals[0] = (in_val & 0xFF00) >> 8;
+    vals[1] = (in_val & 0x00FF);
+    nbytes = sizeof(vals);
+    rv = apr_file_write(f, vals, &nbytes);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "can't write 2-byte length to file");
     }
     return rv;
 }

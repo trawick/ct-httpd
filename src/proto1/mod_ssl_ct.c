@@ -408,11 +408,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
         overall_len += scts_size + 2; /* include size header */
 
-        rv = ctutil_file_write_uint16(tmpfile, (apr_uint16_t)scts_size);
+        rv = ctutil_file_write_uint16(s, tmpfile, (apr_uint16_t)scts_size);
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "can't write 2-byte length to %s",
-                         tmp_collated_fn);
             break;
         }
 
@@ -430,7 +427,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
         rv = apr_file_seek(tmpfile, APR_SET, &offset);
         if (rv == APR_SUCCESS) {
-            rv = ctutil_file_write_uint16(tmpfile, overall_len);
+            rv = ctutil_file_write_uint16(s, tmpfile, overall_len);
         }
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -1464,10 +1461,13 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
         int i;
         ct_sct_data *sct_elts;
         X509 **x509elts;
+        server_rec *s = c->base_server;
+
         ctutil_thread_mutex_lock(audit_file_mutex);
 
         /* New data from server */
-        rv = ctutil_file_write_uint16(audit_file, SERVER_START);
+        rv = ctutil_file_write_uint16(s, audit_file,
+                                      SERVER_START);
         ap_assert(rv == APR_SUCCESS);
 
         /* Write each certificate, starting with leaf */
@@ -1476,7 +1476,7 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
             unsigned char *der_buf = NULL;
             int der_length;
 
-            rv = ctutil_file_write_uint16(audit_file, CERT_START);
+            rv = ctutil_file_write_uint16(s, audit_file, CERT_START);
             ap_assert(rv == APR_SUCCESS);
 
             /* now write the cert!!! */
@@ -1484,7 +1484,7 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
             der_length = i2d_X509(x509elts[i], &der_buf);
             ap_assert(der_length > 0);
 
-            rv = ctutil_file_write_uint16(audit_file, der_length);
+            rv = ctutil_file_write_uint16(s, audit_file, der_length);
             ap_assert(rv == APR_SUCCESS);
             rv = apr_file_write_full(audit_file, der_buf, der_length,
                                      &bytes_written);
@@ -1498,12 +1498,12 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
         for (i = 0; i < conncfg->all_scts->nelts; i++) {
             ct_sct_data sct;
 
-            rv = ctutil_file_write_uint16(audit_file, SCT_START);
+            rv = ctutil_file_write_uint16(s, audit_file, SCT_START);
             ap_assert(rv == APR_SUCCESS);
 
             /* now write the SCT!!! */
             sct = sct_elts[i];
-            rv = ctutil_file_write_uint16(audit_file, sct.len);
+            rv = ctutil_file_write_uint16(s, audit_file, sct.len);
             ap_assert(rv == APR_SUCCESS);
             rv = apr_file_write_full(audit_file, sct.data, sct.len,
                                      &bytes_written);
