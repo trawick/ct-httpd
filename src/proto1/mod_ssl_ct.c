@@ -578,13 +578,14 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
 
     rv = apr_stat(&finfo, sct_fn, APR_FINFO_MTIME, p);
     if (rv == APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                      "Found SCT for %s in %s",
                      cert_file, sct_fn);
 
         if (finfo.mtime + max_sct_age < apr_time_now()) {
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                         "Older than %d seconds, must refresh",
+                         "SCT for %s is older than %d seconds, must refresh",
+                         cert_file,
                          (int)(apr_time_sec(max_sct_age)));
         }
         else {
@@ -732,7 +733,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
         const char * const *elts;
         int i;
 
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
                      "List of previous logs doesn't exist (%s), removing previously obtained SCTs",
                      listfile);
 
@@ -1169,7 +1170,7 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
     X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
 #endif
 
-    log_array(APLOG_MARK, APLOG_INFO, s, "Certificate files:", cert_files);
+    log_array(APLOG_MARK, APLOG_DEBUG, s, "Certificate files:", cert_files);
     sconf->cert_files = cert_files;
 
     return OK;
@@ -1393,14 +1394,14 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
     apr_status_t rv = APR_SUCCESS;
 
     if (conncfg->serverhello_sct_list) {
-        ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from ServerHello",
+        ap_log_cdata(APLOG_MARK, APLOG_TRACE6, c, "SCT(s) from ServerHello",
                      conncfg->serverhello_sct_list,
                      conncfg->serverhello_sct_list_size,
                      AP_LOG_DATA_SHOW_OFFSET);
     }
 
     if (conncfg->cert_sct_list) {
-        ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "SCT(s) from certificate",
+        ap_log_cdata(APLOG_MARK, APLOG_TRACE6, c, "SCT(s) from certificate",
                      conncfg->cert_sct_list,
                      conncfg->cert_sct_list_size,
                      AP_LOG_DATA_SHOW_OFFSET);
@@ -1529,7 +1530,7 @@ static int client_extension_callback_1(SSL *ssl, unsigned short ext_type,
 
     /* nothing to send in ClientHello */
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+    ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c,
                   "client_extension_callback_1 called, "
                   "ext %hu will be in ClientHello",
                   ext_type);
@@ -1546,10 +1547,10 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
 
     /* need to retrieve SCT(s) from ServerHello (or certificate or stapled response) */
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+    ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c,
                   "client_extension_callback_2 called, "
-                  "ext %hu was in ServerHello",
-                  ext_type);
+                  "ext %hu was in ServerHello (len %hu)",
+                  ext_type, inlen);
 
     /* Note: Peer certificate is not available in this callback via
      *       SSL_get_peer_certificate(ssl)
@@ -1585,12 +1586,6 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "ssl_ct_ssl_proxy_verify() - get server certificate info");
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "chain size: %d"
-                  ,
-                  chain_size
-                  );
-
     if (chain_size < 1) {
         ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                       "odd chain size %d -- cannot proceed", chain_size);
@@ -1608,10 +1603,6 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                             NID_ctEmbeddedSignedCertificateTimestampList,
                             -1);
     /* use X509_get_ext(certs->leaf, extension_index) to obtain X509_EXTENSION * */
-
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "Extension for embedded SCT list: %d",
-                  extension_index);
 
     if (extension_index >= 0) {
         void *ext_struct;
@@ -1704,20 +1695,20 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
     cert_chain_free(certs);
 
     ap_log_cerror(APLOG_MARK,
-                  rv == APR_SUCCESS ? APLOG_INFO : APLOG_ERR, rv, c,
+                  rv == APR_SUCCESS ? APLOG_DEBUG : APLOG_ERR, rv, c,
                   "SCT list received in: %s%s%s(%s)",
                   conncfg->serverhello_has_sct_list ? "ServerHello " : "",
                   conncfg->server_cert_has_sct_list ? "certificate-extension " : "",
                   "", /* no logic for stapled response yet */
-                  cached ? "cached" : "new");
+                  cached ? "already saved" : "seen for the first time");
 
     return rv == APR_SUCCESS ? OK : rv;
 }
 
 static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
-                                    const unsigned char *in,
-                                    unsigned short inlen, int *al,
-                                    void *arg)
+                                       const unsigned char *in,
+                                       unsigned short inlen, int *al,
+                                       void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
 
@@ -1726,7 +1717,7 @@ static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
      */
     client_is_ct_aware(c);
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+    ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c,
                   "server_extension_callback_1 called, "
                   "ext %hu was in ClientHello (len %hu)",
                   ext_type, inlen);
@@ -1762,7 +1753,7 @@ static int server_extension_callback_2(SSL *ssl, unsigned short ext_type,
     server_cert = SSL_get_certificate(ssl); /* no need to free! */
     fingerprint = get_cert_fingerprint(c->pool, server_cert);
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+    ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c,
                   "server_extension_callback_2 called, "
                   "ext %hu will be in ServerHello",
                   ext_type);
@@ -1792,7 +1783,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
                   client_server, type, len);
 
     if (type == CT_EXTENSION_TYPE) {
-        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "Got CT extension");
+        ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c, "Got CT TLS extension");
 
         client_is_ct_aware(c);
     }
@@ -1800,7 +1791,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
 
 static int ssl_ct_ssl_new_client_pre_handshake(server_rec *s, conn_rec *c, SSL *ssl)
 {
-    ap_log_cerror(APLOG_MARK, APLOG_INFO, 0, c, "client connected (pre-handshake)");
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "client connected (pre-handshake)");
 
     /* This callback is needed only to determine that the peer is CT-aware
      * when resuming a session.  For an initial handshake, the callbacks
