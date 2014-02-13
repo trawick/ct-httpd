@@ -56,4 +56,11 @@ apr_status_t ctutil_file_write_uint16(server_rec *s,
                                       apr_file_t *f,
                                       apr_uint16_t val);
 
+void ctutil_log_array(const char *file, int line, int module_index,
+                      int level, server_rec *s, const char *desc,
+                      apr_array_header_t *arr);
+
+apr_status_t ctutil_read_var_bytes(unsigned char **mem, apr_size_t *avail,
+                                   unsigned char **start, apr_size_t *len);
+
 #endif /* SSL_CT_UTIL_H */

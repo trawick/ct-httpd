@@ -46,6 +46,7 @@
  *   . shouldn't have to read collation of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
+ *   . recover from errors writing server data to audit file
  *
  * + Everything else
  *   . ??
@@ -269,6 +270,9 @@ static void run_internal_tests(apr_pool_t *p)
 /* As of httpd 2.5, this should only read the FIRST certificate
  * in the file.  NOT IMPLEMENTED (assumes that the leaf certificate
  * is the ONLY certificate)
+ *
+ * XXX No, we'll get the certificates in a different way -- from the SSL_CTX
+ *     directly.  No worries for now.
  */
 static apr_status_t read_leaf_certificate(server_rec *s,
                                           const char *fn, apr_pool_t *p,
@@ -345,7 +349,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     apr_status_t rv, tmprv;
     apr_file_t *tmpfile;
     apr_size_t bytes_written;
-    apr_uint16_t overall_len;
+    apr_uint16_t overall_len = 0;
     char *tmp_collated_fn, *collated_fn;
     const char *cur_sct_file;
     const char * const *elts;
@@ -366,7 +370,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
     rv = apr_file_open(&tmpfile, tmp_collated_fn,
                        APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
-                       |APR_FOPEN_BINARY /* with seek? |APR_FOPEN_BUFFERED */,
+                       |APR_FOPEN_BINARY|APR_FOPEN_BUFFERED,
                        APR_FPROT_OS_DEFAULT, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
@@ -377,9 +381,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     /* stick a 0 len (for the list) at the start of the file;
      * we'll have to patch that later
      */
-    overall_len = 0; /* no byte order considerations */
-    rv = apr_file_write_full(tmpfile, &overall_len, sizeof(overall_len),
-                             &bytes_written);
+    rv = ctutil_file_write_uint16(s, tmpfile, overall_len);
     if (rv != APR_SUCCESS) {
         apr_file_close(tmpfile);
         return rv;
@@ -458,14 +460,9 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         }
         rv = apr_file_rename(tmp_collated_fn, collated_fn, p);
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "couldn't rename %s to %s",
+            ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                         "couldn't rename %s to %s, no SCTs to send for now",
                          tmp_collated_fn, collated_fn);
-            if (replacing) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                             "continuing to use existing file %s",
-                             collated_fn);
-            }
         }
         if (replacing) {
             if ((tmprv = apr_global_mutex_unlock(ssl_ct_sct_update)) != APR_SUCCESS) {
@@ -937,7 +934,7 @@ static int sct_daemon(server_rec *s_main)
     apr_pool_create(&ptemp, pdaemon);
 
     while (!daemon_should_exit) {
-        apr_sleep(apr_time_from_sec(30));
+        apr_sleep(apr_time_from_sec(30)); /* SIGHUP at restart/stop will break out */
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                      DAEMON_NAME " - refreshing SCTs as needed");
@@ -1148,21 +1145,6 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
     return rv;
 }
 
-static void log_array(const char *file, int line, int module_index,
-                      int level, server_rec *s, const char *desc,
-                      apr_array_header_t *arr)
-{
-    const char **elts = (const char **)arr->elts;
-    int i;
-
-    ap_log_error(file, line, module_index, level,
-                 0, s, "%s", desc);
-    for (i = 0; i < arr->nelts; i++) {
-        ap_log_error(file, line, module_index, level,
-                     0, s, ">>%s", elts[i]);
-    }
-}
-
 static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_t *cert_files)
 {
     ct_server_config *sconf = ap_get_module_config(s->module_config,
@@ -1171,7 +1153,8 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
     X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
 #endif
 
-    log_array(APLOG_MARK, APLOG_DEBUG, s, "Certificate files:", cert_files);
+    ctutil_log_array(APLOG_MARK, APLOG_DEBUG, s, "Certificate files:",
+                     cert_files);
     sconf->cert_files = cert_files;
 
     return OK;
@@ -1220,12 +1203,6 @@ typedef struct cert_chain {
     X509 *leaf;
 } cert_chain;
 
-/*
-static X509 *cert_chain_get(cert_chain *cc, int i)
-{
-}
-*/
-
 static cert_chain *cert_chain_init(apr_pool_t *p, STACK_OF(X509) *chain)
 {
     cert_chain *cc = apr_pcalloc(p, sizeof(cert_chain));
@@ -1253,6 +1230,10 @@ static void cert_chain_free(cert_chain *cc) {
     }
 }
 
+/* Create hash of leaf certificate and any SCTs so that
+ * we can determine whether or not we've seen this exact
+ * info from the server before.
+ */
 static const char *gen_key(conn_rec *c, cert_chain *cc,
                            ct_conn_config *conncfg)
 {
@@ -1276,71 +1257,6 @@ static const char *gen_key(conn_rec *c, cert_chain *cc,
     return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
 }
 
-/* all this deserialization crap is of course from
- * c-t/src/proto/serializer.cc
- */
-static apr_status_t read_u16(unsigned char **mem, apr_size_t *avail, apr_uint16_t *val)
-{
-    int i;
-
-    if (*avail < 2) {
-        return APR_EINVAL;
-    }
-
-    *val = 0;
-
-    for (i = 0; i < sizeof(*val); i++) {
-        *val = (*val << 8) | **mem;
-        *mem += 1;
-        *avail -= 1;
-    }
-
-    return APR_SUCCESS;
-}
-
-static apr_status_t read_length_prefix(unsigned char **mem, apr_size_t *avail,
-                                       apr_size_t *result)
-{
-    apr_status_t rv;
-    apr_uint16_t val;
-
-    rv = read_u16(mem, avail, &val);
-    if (rv == APR_SUCCESS) {
-        *result = val;
-    }
-
-    return rv;
-}
-
-static apr_status_t read_fixed_bytes(unsigned char **mem, apr_size_t *avail,
-                                     apr_size_t len,
-                                     unsigned char **start)
-{
-    if (*avail < len) {
-        return APR_EINVAL;
-    }
-
-    *start = *mem;
-    *avail -= len;
-    *mem += len;
-
-    return APR_SUCCESS;
-}
-
-static apr_status_t read_var_bytes(unsigned char **mem, apr_size_t *avail,
-                                   unsigned char **start, apr_size_t *len)
-{
-    apr_status_t rv;
-
-    rv = read_length_prefix(mem, avail, len);
-    if (rv != APR_SUCCESS) {
-        return rv;
-    }
-
-    rv = read_fixed_bytes(mem, avail, *len, start);
-    return rv;
-}
-
 static apr_status_t deserialize_SCTs(apr_pool_t *p,
                                      ct_conn_config *conncfg,
                                      void *sct_list,
@@ -1355,7 +1271,7 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
 
     /* Make sure the overall length is correct */
 
-    rv = read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
+    rv = ctutil_read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
     if (rv != APR_SUCCESS) {
         return rv;
     }
@@ -1370,7 +1286,7 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
     avail = sct_list_size - sizeof(apr_uint16_t);
 
     while (rv == APR_SUCCESS && avail > 0) {
-        rv = read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
+        rv = ctutil_read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
         if (rv == APR_SUCCESS) {
             ct_sct_data *sct = (ct_sct_data *)apr_array_push(conncfg->all_scts);
 
@@ -1394,6 +1310,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
 {
     apr_status_t rv = APR_SUCCESS;
 
+#if AP_MODULE_MAGIC_AT_LEAST(20130702,2)
     if (conncfg->serverhello_sct_list) {
         ap_log_cdata(APLOG_MARK, APLOG_TRACE6, c, "SCT(s) from ServerHello",
                      conncfg->serverhello_sct_list,
@@ -1407,6 +1324,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                      conncfg->cert_sct_list_size,
                      AP_LOG_DATA_SHOW_OFFSET);
     }
+#endif /* httpd has ap_log_cdata() */
 
     if (!conncfg->all_scts) {
         conncfg->all_scts = apr_array_make(p, 4, sizeof(ct_sct_data));
@@ -1432,6 +1350,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
 
     if (rv == APR_SUCCESS) {
         if (conncfg->all_scts->nelts < 1) {
+            /* How did we get here without at least one SCT? */
             ap_log_cerror(APLOG_MARK, APLOG_CRIT, 0, c,
                           "SNAFU: No deserialized SCTs found in validate_server_data()");
             rv = APR_EINVAL;
@@ -1529,8 +1448,9 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
 
     len = SSL_get_tlsext_status_ocsp_resp(ssl, &p);
     if (!p) {
-        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
-                      "OCSP response callback called but no response found");
+        /* normal case */
+        ap_log_cerror(APLOG_MARK, APLOG_TRACE1, 0, c,
+                      "OCSP response callback called but no stapled response from server");
         return 1;
     }
 

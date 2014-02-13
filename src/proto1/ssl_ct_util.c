@@ -355,3 +355,84 @@ apr_status_t ctutil_file_write_uint16(server_rec *s,
     }
     return rv;
 }
+
+void ctutil_log_array(const char *file, int line, int module_index,
+                      int level, server_rec *s, const char *desc,
+                      apr_array_header_t *arr)
+{
+    const char **elts = (const char **)arr->elts;
+    int i;
+
+    ap_log_error(file, line, module_index, level,
+                 0, s, "%s", desc);
+    for (i = 0; i < arr->nelts; i++) {
+        ap_log_error(file, line, module_index, level,
+                     0, s, ">>%s", elts[i]);
+    }
+}
+
+/* all this deserialization crap is of course from
+ * c-t/src/proto/serializer.cc
+ */
+static apr_status_t read_u16(unsigned char **mem, apr_size_t *avail, apr_uint16_t *val)
+{
+    int i;
+
+    if (*avail < 2) {
+        return APR_EINVAL;
+    }
+
+    *val = 0;
+
+    for (i = 0; i < sizeof(*val); i++) {
+        *val = (*val << 8) | **mem;
+        *mem += 1;
+        *avail -= 1;
+    }
+
+    return APR_SUCCESS;
+}
+
+static apr_status_t read_length_prefix(unsigned char **mem, apr_size_t *avail,
+                                       apr_size_t *result)
+{
+    apr_status_t rv;
+    apr_uint16_t val;
+
+    rv = read_u16(mem, avail, &val);
+    if (rv == APR_SUCCESS) {
+        *result = val;
+    }
+
+    return rv;
+}
+
+static apr_status_t read_fixed_bytes(unsigned char **mem, apr_size_t *avail,
+                                     apr_size_t len,
+                                     unsigned char **start)
+{
+    if (*avail < len) {
+        return APR_EINVAL;
+    }
+
+    *start = *mem;
+    *avail -= len;
+    *mem += len;
+
+    return APR_SUCCESS;
+}
+
+apr_status_t ctutil_read_var_bytes(unsigned char **mem, apr_size_t *avail,
+                                   unsigned char **start, apr_size_t *len)
+{
+    apr_status_t rv;
+
+    rv = read_length_prefix(mem, avail, len);
+    if (rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    rv = read_fixed_bytes(mem, avail, *len, start);
+    return rv;
+}
+
