@@ -17,19 +17,8 @@
 /*
  * Issues
  *
- * + Certificates
- *   These are read to obtain fingerprints and to submit to logs.
- *   The module assumes that they are configured via SSLCertificateFile
- *   with only a leaf certificate in the file.  Certificates loaded by
- *   SSLOpenSSLConfCmd are not supported.
- *
- *   See dev@httpd e-mails discussing SSL_CTX_get_{first,next}_certificate()
- *
- *   Ah, but the log needs to see intermediate certificates too...
- * 
  * + OCSP stapling as a means of delivering SCT(s)
  *   This is completely ignored at present.
- *
  * + Proxy: how much can we verify each SCT on-line?  Currently we just
  *   check that we can walk through the SCTs in the list via the length
  *   fields.
@@ -43,7 +32,7 @@
  * + Known low-level code kludges/problems
  *   . no way to log CT-awareness of backend server (put it in configurable response
  *     header to allow logging or easy testing from client)
- *   . shouldn't have to read collation of server SCTs on every handshake
+ *   . shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
  *   . recover from errors writing server data to audit file
@@ -122,7 +111,7 @@
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
     apr_array_header_t *log_url_strs;
-    apr_array_header_t *cert_files;
+    apr_array_header_t *cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
     const char *ct_tools_dir;
@@ -265,53 +254,6 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(ctutil_in_array(TESTURL2, arr));
     ap_assert(ctutil_in_array(TESTURL3, arr));
     ap_assert(!ctutil_in_array(TESTURL1 "x", arr));
-}
-
-/* As of httpd 2.5, this should only read the FIRST certificate
- * in the file.  NOT IMPLEMENTED (assumes that the leaf certificate
- * is the ONLY certificate)
- *
- * XXX No, we'll get the certificates in a different way -- from the SSL_CTX
- *     directly.  No worries for now.
- */
-static apr_status_t read_leaf_certificate(server_rec *s,
-                                          const char *fn, apr_pool_t *p,
-                                          const char **leaf_cert, 
-                                          apr_size_t *leaf_cert_size)
-{
-    apr_status_t rv;
-
-    /* Uggg...  For now assume that only a leaf certificate is in the PEM file. */
-
-    rv = ctutil_read_file(p, s, fn, MAX_CERT_FILE_SIZE, (char **)leaf_cert,
-                          leaf_cert_size);
-
-    return rv;
-}
-
-static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
-                                                   apr_pool_t *p,
-                                                   const char *cert_file,
-                                                   const char **fingerprint)
-{
-    apr_status_t rv;
-    BIO *bio;
-    X509 *x;
-    const char *leaf_cert;
-    apr_size_t leaf_cert_size;
-
-    rv = read_leaf_certificate(s, cert_file, p,
-                               &leaf_cert, &leaf_cert_size);
-
-    if (rv == APR_SUCCESS) {
-        bio = BIO_new_mem_buf((void *)leaf_cert, leaf_cert_size);
-        ap_assert(bio);
-        x = PEM_read_bio_X509(bio, NULL, 0L, NULL);
-        ap_assert(x);
-        *fingerprint = get_cert_fingerprint(p, x);
-    }
-
-    return rv;
 }
 
 /* a server's SCT-related storage on disk:
@@ -509,34 +451,6 @@ static const char *url_to_fn(apr_pool_t *p, const apr_uri_t *log_url)
     return fn;
 }
 
-static apr_status_t get_cert_sct_dir(server_rec *s, apr_pool_t *p,
-                                     const char *cert_file,
-                                     const char *sct_dir,
-                                     char **cert_sct_dir_out)
-{
-    apr_status_t rv;
-    const char *fingerprint;
-    char *cert_sct_dir;
-
-    *cert_sct_dir_out = NULL;
-
-    rv = get_cert_fingerprint_from_file(s, p, cert_file, &fingerprint);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "failed to get certificate fingerprint from %s",
-                     cert_file);
-        return rv;
-    }
-
-    rv = ctutil_path_join(&cert_sct_dir, sct_dir, fingerprint, p, s);
-    if (rv != APR_SUCCESS) {
-        return rv;
-    }
-
-    *cert_sct_dir_out = cert_sct_dir;
-    return APR_SUCCESS;
-}
-
 static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
                                const apr_uri_t *log_url, const char *cert_file,
                                const char *sct_fn)
@@ -564,7 +478,7 @@ static apr_status_t submission(server_rec *s, apr_pool_t *p, const char *ct_exe,
 static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
                               const char *cert_file,
                               const char *cert_sct_dir,
-                              const apr_uri_t *log_url, const char *sct_dir,
+                              const apr_uri_t *log_url,
                               const char *ct_exe, apr_time_t max_sct_age)
 {
     apr_status_t rv;
@@ -768,8 +682,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
 }
 
 static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
-                                          const char *cert_fn,
-                                          const char *sct_dir,
+                                          const char *cert_sct_dir,
                                           apr_array_header_t *log_urls,
                                           apr_array_header_t *log_url_strs,
                                           const char *ct_exe,
@@ -777,25 +690,15 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
 {
     apr_status_t rv;
     apr_uri_t *log_elts;
-    char *cert_sct_dir;
+    char *cert_fn;
     int i;
 
-    log_elts  = (apr_uri_t *)log_urls->elts;
-
-    rv = get_cert_sct_dir(s, p, cert_fn, sct_dir, &cert_sct_dir);
+    rv = ctutil_path_join(&cert_fn, cert_sct_dir, SERVERCERTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
         return rv;
     }
 
-    if (!ctutil_dir_exists(p, cert_sct_dir)) {
-        rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, p);
-        if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "can't create directory %s",
-                         cert_sct_dir);
-            return rv;
-        }
-    }
+    log_elts  = (apr_uri_t *)log_urls->elts;
 
     rv = update_log_list_for_cert(s, p, cert_sct_dir, log_urls, log_url_strs);
     if (rv != APR_SUCCESS) {
@@ -806,7 +709,6 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
         rv = fetch_sct(s, p, cert_fn,
                        cert_sct_dir,
                        &log_elts[i],
-                       sct_dir,
                        ct_exe,
                        max_sct_age);
         if (rv != APR_SUCCESS) {
@@ -1002,20 +904,20 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
         ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                        &ssl_ct_module);
         int i;
-        const char **cert_elts;
+        const char **cert_sct_dirs_elts;
  
-        if (sconf && sconf->cert_files) {
-            cert_elts = (const char **)sconf->cert_files->elts;
-            for (i = 0; i < sconf->cert_files->nelts; i++) {
+        if (sconf && sconf->cert_sct_dirs) {
+            cert_sct_dirs_elts = (const char **)sconf->cert_sct_dirs->elts;
+            for (i = 0; i < sconf->cert_sct_dirs->nelts; i++) {
                 /* we may have already processed this cert for another
                  * server_rec
                  */
-                if (!apr_hash_get(already_processed, cert_elts[i],
+                if (!apr_hash_get(already_processed, cert_sct_dirs_elts[i],
                                   APR_HASH_KEY_STRING)) {
-                    apr_hash_set(already_processed, cert_elts[i],
+                    apr_hash_set(already_processed, cert_sct_dirs_elts[i],
                                  APR_HASH_KEY_STRING, "done");
-                    rv = refresh_scts_for_cert(s_main, p, cert_elts[i],
-                                               sconf->sct_storage, sconf->log_urls,
+                    rv = refresh_scts_for_cert(s_main, p, cert_sct_dirs_elts[i],
+                                               sconf->log_urls,
                                                sconf->log_url_strs,
                                                sconf->ct_exe,
                                                sconf->max_sct_age);
@@ -1152,6 +1054,8 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
 
 static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_dir)
 {
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
     apr_pool_t *p = s->process->pool;
     apr_status_t rv;
     FILE *concat;
@@ -1161,6 +1065,8 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
     char *cert_sct_dir, *servercerts_pem;
     const char *fingerprint;
 
+    sconf->cert_sct_dirs = apr_array_make(p, 2, sizeof(char *));
+
     rc = SSL_CTX_set_current_cert(ctx, SSL_CERT_SET_FIRST);
     while (rc) {
         x = SSL_CTX_get0_certificate(ctx);
@@ -1168,6 +1074,16 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
             fingerprint = get_cert_fingerprint(s->process->pool, x);
             rv = ctutil_path_join(&cert_sct_dir, sct_dir, fingerprint, p, s);
             ap_assert(rv == APR_SUCCESS);
+
+            if (!ctutil_dir_exists(p, cert_sct_dir)) {
+                rv = apr_dir_make(cert_sct_dir, APR_FPROT_OS_DEFAULT, p);
+                if (rv != APR_SUCCESS) {
+                    ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                                 "can't create directory %s",
+                                 cert_sct_dir);
+                    ap_assert(rv == APR_SUCCESS);
+                }
+            }
 
             rv = ctutil_path_join(&servercerts_pem, cert_sct_dir,
                                   SERVERCERTS_BASENAME, p, s);
@@ -1179,7 +1095,16 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
             ap_assert(1 == PEM_write_X509(concat, x)); /* leaf */
 
             chain = NULL;
-            SSL_CTX_get0_chain_certs(ctx, &chain);
+
+            /* Not this: SSL_CTX_get0_chain_certs(ctx, &chain);
+             *
+             * See this thread:
+             *   http://mail-archives.apache.org/mod_mbox/httpd-dev/
+             *   201402.mbox/%3CCAKUrXK5-2_Sg8FokxBP8nW7tmSuTZZWL-%3
+             *   DBDhNnwyK-Z4dmQiQ%40mail.gmail.com%3E
+             */
+            SSL_CTX_get_extra_chain_certs(ctx, &chain);
+
             if (chain) {
                 for (i = 0; i < sk_X509_num(chain); i++) {
                     X509 *x = sk_X509_value(chain, i);
@@ -1190,6 +1115,9 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
 
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                          "wrote server cert and chain to %s", servercerts_pem);
+
+            *(char **)apr_array_push(sconf->cert_sct_dirs)
+                = cert_sct_dir;
         }
         else {
             ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
@@ -1203,15 +1131,8 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
 {
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
-#if 0
-    X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
-#endif
 
     look_for_server_certs(s, ctx, sconf->sct_storage);
-
-    ctutil_log_array(APLOG_MARK, APLOG_DEBUG, s, "Certificate files:",
-                     cert_files);
-    sconf->cert_files = cert_files;
 
     return OK;
 }
