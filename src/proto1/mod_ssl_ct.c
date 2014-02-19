@@ -314,7 +314,11 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
     return rv;
 }
 
-/* SCT storage on disk:
+/* a server's SCT-related storage on disk:
+ *
+ *   <rootdir>/<fingerprint>/servercerts.pem
+ *                  Concatenation of leaf certificate and any
+ *                  configured intermediate certificates
  *
  *   <rootdir>/<fingerprint>/logs  
  *                  List of log URLs, one per line
@@ -335,6 +339,7 @@ static apr_status_t get_cert_fingerprint_from_file(server_rec *s,
  *                  processes care about)
  */
 
+#define SERVERCERTS_BASENAME   "servercerts.pem"
 #define COLLATED_SCTS_BASENAME "collated"
 #define LOGLIST_BASENAME       "logs"
 #define LOG_SCT_PREFIX         "AUTO_" /* to distinguish from admin-created .sct
@@ -1145,6 +1150,55 @@ static apr_status_t read_scts(apr_pool_t *p, const char *fingerprint,
     return rv;
 }
 
+static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_dir)
+{
+    apr_pool_t *p = s->process->pool;
+    apr_status_t rv;
+    FILE *concat;
+    X509 *x;
+    STACK_OF(X509) *chain;
+    int i, rc;
+    char *cert_sct_dir, *servercerts_pem;
+    const char *fingerprint;
+
+    rc = SSL_CTX_set_current_cert(ctx, SSL_CERT_SET_FIRST);
+    while (rc) {
+        x = SSL_CTX_get0_certificate(ctx);
+        if (x) {
+            fingerprint = get_cert_fingerprint(s->process->pool, x);
+            rv = ctutil_path_join(&cert_sct_dir, sct_dir, fingerprint, p, s);
+            ap_assert(rv == APR_SUCCESS);
+
+            rv = ctutil_path_join(&servercerts_pem, cert_sct_dir,
+                                  SERVERCERTS_BASENAME, p, s);
+            ap_assert(rv == APR_SUCCESS);
+
+            concat = fopen(servercerts_pem, "wb");
+            ap_assert(concat);
+
+            ap_assert(1 == PEM_write_X509(concat, x)); /* leaf */
+
+            chain = NULL;
+            SSL_CTX_get0_chain_certs(ctx, &chain);
+            if (chain) {
+                for (i = 0; i < sk_X509_num(chain); i++) {
+                    X509 *x = sk_X509_value(chain, i);
+                    ap_assert(1 == PEM_write_X509(concat, x));
+                }
+            }
+            ap_assert(0 == fclose(concat));
+
+            ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                         "wrote server cert and chain to %s", servercerts_pem);
+        }
+        else {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+                         "could not find leaf certificate");
+        }
+        rc = SSL_CTX_set_current_cert(ctx, SSL_CERT_SET_NEXT);
+    }
+}
+
 static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_t *cert_files)
 {
     ct_server_config *sconf = ap_get_module_config(s->module_config,
@@ -1152,6 +1206,8 @@ static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_
 #if 0
     X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx);
 #endif
+
+    look_for_server_certs(s, ctx, sconf->sct_storage);
 
     ctutil_log_array(APLOG_MARK, APLOG_DEBUG, s, "Certificate files:",
                      cert_files);
