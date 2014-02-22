@@ -1451,8 +1451,9 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
  *   cli_ext_second_cb - receives data from ServerHello TLS Extension
  */
 static int client_extension_callback_1(SSL *ssl, unsigned short ext_type,
-                                    const unsigned char **out,
-                                    unsigned short *outlen, void *arg)
+                                       const unsigned char **out,
+                                       unsigned short *outlen, int *al,
+                                       void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
 
@@ -1654,8 +1655,9 @@ static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
 }
 
 static int server_extension_callback_2(SSL *ssl, unsigned short ext_type,
-                                    const unsigned char **out,
-                                    unsigned short *outlen, void *arg)
+                                       const unsigned char **out,
+                                       unsigned short *outlen, int *al,
+                                       void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     ct_server_config *sconf = ap_get_module_config(c->base_server->module_config,
