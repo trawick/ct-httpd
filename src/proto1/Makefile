@@ -2,7 +2,7 @@ INST = $(HOME)/inst/ct-64
 APACHECTL = $(INST)/bin/apachectl
 APXS = $(INST)/bin/apxs
 SSLSRC = $(HOME)/svn/httpd-ct/modules/ssl
-OPENSSLINST = $(HOME)/inst/omaster
+OPENSSLINST = $(HOME)/inst/o102
 
 SOURCES = mod_ssl_ct.c ssl_ct_util.h ssl_ct_util.c Makefile *.py
 
