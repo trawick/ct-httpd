@@ -1,6 +1,6 @@
 Index: modules/ssl/mod_ssl.c
 ===================================================================
---- modules/ssl/mod_ssl.c	(revision 1564954)
+--- modules/ssl/mod_ssl.c	(revision 1571369)
 +++ modules/ssl/mod_ssl.c	(working copy)
 @@ -37,6 +37,9 @@
  int ssl_running_on_valgrind = 0;
@@ -23,7 +23,7 @@ Index: modules/ssl/mod_ssl.c
  
 Index: modules/ssl/ssl_engine_init.c
 ===================================================================
---- modules/ssl/ssl_engine_init.c	(revision 1564954)
+--- modules/ssl/ssl_engine_init.c	(revision 1571369)
 +++ modules/ssl/ssl_engine_init.c	(working copy)
 @@ -29,6 +29,11 @@
  #include "ssl_private.h"
@@ -77,9 +77,33 @@ Index: modules/ssl/ssl_engine_init.c
      return APR_SUCCESS;
  }
  
+Index: modules/ssl/ssl_engine_io.c
+===================================================================
+--- modules/ssl/ssl_engine_io.c	(revision 1571369)
++++ modules/ssl/ssl_engine_io.c	(working copy)
+@@ -31,6 +31,9 @@
+ #include "mod_ssl.h"
+ #include "apr_date.h"
+ 
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int, ssl_proxy_post_handshake,(server_rec *s,conn_rec *c),
++                                   (s,c),OK,DECLINED);
++
+ /*  _________________________________________________________________
+ **
+ **  I/O Hooks
+@@ -1208,6 +1211,9 @@
+             }
+         }
+ 
++        /* call hook now that handshake is completely finished */
++        ap_run_ssl_proxy_post_handshake(server, c);
++
+         if (cert) {
+             X509_free(cert);
+         }
 Index: modules/ssl/ssl_engine_kernel.c
 ===================================================================
---- modules/ssl/ssl_engine_kernel.c	(revision 1564954)
+--- modules/ssl/ssl_engine_kernel.c	(revision 1571369)
 +++ modules/ssl/ssl_engine_kernel.c	(working copy)
 @@ -32,6 +32,9 @@
  #include "mod_ssl.h"
@@ -109,7 +133,7 @@ Index: modules/ssl/ssl_hooks.h
 ===================================================================
 --- modules/ssl/ssl_hooks.h	(revision 0)
 +++ modules/ssl/ssl_hooks.h	(working copy)
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,34 @@
 +/* Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
 + * this work for additional information regarding copyright ownership.
@@ -141,11 +165,12 @@ Index: modules/ssl/ssl_hooks.h
 +AP_DECLARE_HOOK(int,ssl_new_client_pre_handshake,(server_rec *,conn_rec *,SSL *ssl))
 +AP_DECLARE_HOOK(int,ssl_proxy_verify,(server_rec *,conn_rec *,SSL *ssl,X509_STORE_CTX *ctx))
 +AP_DECLARE_HOOK(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,apr_pool_t *ptemp,int is_proxy,SSL_CTX *ctx))
++AP_DECLARE_HOOK(int,ssl_proxy_post_handshake,(server_rec *,conn_rec *))
 +
 +#endif /* SSL_HOOKS_H */
 Index: modules/ssl/ssl_private.h
 ===================================================================
---- modules/ssl/ssl_private.h	(revision 1564954)
+--- modules/ssl/ssl_private.h	(revision 1571369)
 +++ modules/ssl/ssl_private.h	(working copy)
 @@ -932,6 +932,8 @@
  extern int ssl_running_on_valgrind;

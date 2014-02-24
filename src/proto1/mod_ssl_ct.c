@@ -17,14 +17,11 @@
 /*
  * Issues
  *
- * + OCSP stapling as a means of delivering SCT(s)
- *   This is completely ignored at present.
  * + Proxy: how much can we verify each SCT on-line?  Currently we just
  *   check that we can walk through the SCTs in the list via the length
  *   fields.
  * + Proxy should have a setting that aborts when the backend doesn't send
- *   an SCT.  (It must recognize when one is delivered with the certificate
- *   or via OCSP stapling.)
+ *   an SCT.
  *
  * + Configuration kludges
  *   . ??
@@ -36,6 +33,9 @@
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
  *   . recover from errors writing server data to audit file
+ *   . checking for SCT list in stapled OCSP response relies on looking at
+ *     the string representation of the ASN.1 object (slow, probably isn't
+ *     stable)
  *
  * + Everything else
  *   . ??
@@ -119,15 +119,25 @@ typedef struct ct_server_config {
     apr_time_t max_sct_age;
 } ct_server_config;
 
+typedef struct cert_chain {
+    apr_pool_t *p;
+    apr_array_header_t *cert_arr; /* array of X509 * */
+    X509 *leaf;
+} cert_chain;
+
 typedef struct ct_conn_config {
     int peer_ct_aware;
     /* proxy mode only */
+    cert_chain *certs;
     int server_cert_has_sct_list;
     void *cert_sct_list;
     apr_size_t cert_sct_list_size;
     int serverhello_has_sct_list;
     void *serverhello_sct_list;
     apr_size_t serverhello_sct_list_size;
+    int ocsp_has_sct_list;
+    void *ocsp_sct_list;
+    apr_size_t ocsp_sct_list_size;
     apr_array_header_t *all_scts; /* array of ct_sct_data */
 } ct_conn_config;
 
@@ -1174,12 +1184,6 @@ static void server_cert_has_sct_list(conn_rec *c)
  * the c-t tools can use.
  */
 
-typedef struct cert_chain {
-    apr_pool_t *p;
-    apr_array_header_t *cert_arr; /* array of X509 * */
-    X509 *leaf;
-} cert_chain;
-
 static cert_chain *cert_chain_init(apr_pool_t *p, STACK_OF(X509) *chain)
 {
     cert_chain *cc = apr_pcalloc(p, sizeof(cert_chain));
@@ -1229,6 +1233,10 @@ static const char *gen_key(conn_rec *c, cert_chain *cc,
     if (conncfg->serverhello_sct_list) {
         apr_sha1_update_binary(&sha1ctx, conncfg->serverhello_sct_list,
                                conncfg->serverhello_sct_list_size);
+    }
+    if (conncfg->ocsp_sct_list) {
+        apr_sha1_update_binary(&sha1ctx, conncfg->ocsp_sct_list,
+                               conncfg->ocsp_sct_list_size);
     }
     apr_sha1_final(digest, &sha1ctx);
     return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
@@ -1301,6 +1309,13 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                      conncfg->cert_sct_list_size,
                      AP_LOG_DATA_SHOW_OFFSET);
     }
+
+    if (conncfg->ocsp_sct_list) {
+        ap_log_cdata(APLOG_MARK, APLOG_TRACE6, c, "SCT(s) from stapled OCSP response",
+                     conncfg->ocsp_sct_list,
+                     conncfg->ocsp_sct_list_size,
+                     AP_LOG_DATA_SHOW_OFFSET);
+    }
 #endif /* httpd has ap_log_cdata() */
 
     if (!conncfg->all_scts) {
@@ -1322,6 +1337,14 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
         if (rv != APR_SUCCESS) {
             ap_log_cerror(APLOG_MARK, APLOG_ERR, rv, c,
                           "couldn't deserialize SCT list from ServerHello");
+        }
+    }
+    if (rv == APR_SUCCESS && conncfg->ocsp_sct_list) {
+        rv = deserialize_SCTs(p, conncfg, conncfg->ocsp_sct_list,
+                              conncfg->ocsp_sct_list_size);
+        if (rv != APR_SUCCESS) {
+            ap_log_cerror(APLOG_MARK, APLOG_ERR, rv, c,
+                          "couldn't deserialize SCT list from stapled OCSP response");
         }
     }
 
@@ -1419,6 +1442,7 @@ static const unsigned short CT_EXTENSION_TYPE = 18;
 static int ocsp_resp_cb(SSL *ssl, void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
+    ct_conn_config *conncfg = get_conn_config(c);
     const unsigned char *p;
     int i, j, len;
     OCSP_RESPONSE *rsp;
@@ -1495,9 +1519,10 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
 
             /* i2r_scts(method, ext_str, _, _); */
 
-            ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "OCSP SCT list",
-                         oct->data + 2, oct->length - 2, AP_LOG_DATA_SHOW_OFFSET);
-
+            conncfg->ocsp_has_sct_list = 1;
+            conncfg->ocsp_sct_list_size = oct->length - 2;
+            conncfg->ocsp_sct_list = apr_pmemdup(c->pool, oct->data + 2,
+                                                 conncfg->ocsp_sct_list_size);
         }
     }
 
@@ -1564,12 +1589,9 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                                    X509_STORE_CTX *ctx)
 {
     apr_pool_t *p = c->pool;
-    apr_status_t rv;
-    const char *key;
     ct_conn_config *conncfg = get_conn_config(c);
     int chain_size = sk_X509_num(ctx->chain);
     int extension_index;
-    ct_cached_server_data *cached;
     cert_chain *certs;
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
@@ -1586,6 +1608,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
      */
 
     certs = cert_chain_init(p, ctx->chain);
+    conncfg->certs = certs;
 
     extension_index = 
         X509_get_ext_by_NID(certs->leaf,
@@ -1618,11 +1641,29 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
         }
     }
 
+    return OK;
+}
+
+static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
+{
+    apr_pool_t *p = c->pool;
+    apr_status_t rv = APR_SUCCESS;
+    const char *key;
+    ct_cached_server_data *cached;
+    ct_conn_config *conncfg = get_conn_config(c);
+
+    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                  "finally at the point where we can see where SCTs came from"
+                  " %pp/%pp/%pp (c %pp)",
+                  conncfg->cert_sct_list, conncfg->serverhello_sct_list,
+                  conncfg->ocsp_sct_list, c);
+
     /* At this point we have the SCTs from the cert (if any) and the
      * SCTs from the TLS extension (if any) in ct_conn_config.
      */
 
-    if (conncfg->cert_sct_list || !conncfg->serverhello_sct_list) {
+    if (conncfg->cert_sct_list || !conncfg->serverhello_sct_list
+        || conncfg->ocsp_sct_list) {
 
         /* The key is critical to avoiding validating and queueing of
          * the same stuff over and over.
@@ -1631,7 +1672,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
          * the same as before?
          */
         
-        key = gen_key(c, certs, conncfg);
+        key = gen_key(c, conncfg->certs, conncfg);
 
         ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                       "key for server data: %s", key);
@@ -1647,7 +1688,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
                 (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
 
             new_server_data->validation_result = 
-                rv = validate_server_data(p, c, certs, conncfg);
+                rv = validate_server_data(p, c, conncfg->certs, conncfg);
 
             ctutil_thread_mutex_lock(cached_server_data_mutex);
 
@@ -1669,7 +1710,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
             ctutil_thread_mutex_unlock(cached_server_data_mutex);
 
             if (rv == APR_SUCCESS && !cached) {
-                save_server_data(c, certs, conncfg);
+                save_server_data(c, conncfg->certs, conncfg);
             }
         }
         else {
@@ -1684,15 +1725,19 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
         /* No SCTs at all; consult configuration to know what to do. */
     }
 
-    cert_chain_free(certs);
+    if (conncfg->certs) {
+        cert_chain_free(conncfg->certs);
+        conncfg->certs = NULL;
+    }
 
     ap_log_cerror(APLOG_MARK,
                   rv == APR_SUCCESS ? APLOG_DEBUG : APLOG_ERR, rv, c,
-                  "SCT list received in: %s%s%s(%s)",
+                  "SCT list received in: %s%s%s(%s) (c %pp)",
                   conncfg->serverhello_has_sct_list ? "ServerHello " : "",
                   conncfg->server_cert_has_sct_list ? "certificate-extension " : "",
-                  "", /* no logic for stapled response yet */
-                  cached ? "already saved" : "seen for the first time");
+                  conncfg->ocsp_has_sct_list ? "OCSP " : "",
+                  cached ? "already saved" : "seen for the first time",
+                  c);
 
     return rv == APR_SUCCESS ? OK : rv;
 }
@@ -2046,6 +2091,8 @@ static void ct_register_hooks(apr_pool_t *p)
                      ssl_ct_ssl_new_client_pre_handshake,
                      NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_proxy_verify, ssl_ct_ssl_proxy_verify,
+                     NULL, NULL, APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(ssl_proxy_post_handshake, ssl_ct_ssl_proxy_post_handshake,
                      NULL, NULL, APR_HOOK_MIDDLE);
 }
 
