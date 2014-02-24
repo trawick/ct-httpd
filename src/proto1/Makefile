@@ -9,7 +9,7 @@ SOURCES = mod_ssl_ct.c ssl_ct_util.h ssl_ct_util.c Makefile *.py
 all: mod_ssl_ct.la
 
 clean:
-	rm *.la *.lo *.o *.slo
+	rm -rf *.la *.lo *.o *.slo .libs
 
 mod_ssl_ct.la: mod_ssl_ct.c ssl_ct_util.c ssl_ct_util.h
 	$(APXS) -c -I$(SSLSRC) -I$(OPENSSLINST)/include mod_ssl_ct.c ssl_ct_util.c
