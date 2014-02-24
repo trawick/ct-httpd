@@ -1420,8 +1420,12 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     const unsigned char *p;
-    int len;
+    int i, j, len;
     OCSP_RESPONSE *rsp;
+    OCSP_BASICRESP *br;
+    OCSP_RESPDATA *rd;
+    OCSP_SINGLERESP *single;
+    STACK_OF(X509_EXTENSION) *exts;
 
     len = SSL_get_tlsext_status_ocsp_resp(ssl, &p);
     if (!p) {
@@ -1438,8 +1442,60 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
         return 0;
     }
 
-    ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                  "Got OCSP response (don't know how to search it for OID 1.3.6.1.4.1.11129.2.4.5)");
+    br = OCSP_response_get1_basic(rsp);
+    if (!br) {
+        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                      "no OCSP basic response");
+        return 0;
+    }
+
+    rd = br->tbsResponseData;
+
+    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
+        single = sk_OCSP_SINGLERESP_value(rd->responses, i);
+        if (!single) {
+            continue;
+        }
+
+        exts = single->singleExtensions;
+        for (j = 0; j < sk_X509_EXTENSION_num(exts); j++) {
+            ASN1_OBJECT *obj;
+            X509_EXTENSION *ext;
+            int asn1_size;
+            char buf[80];
+            ASN1_OCTET_STRING *oct;
+
+            ext = sk_X509_EXTENSION_value(exts, j);
+            obj = X509_EXTENSION_get_object(ext);
+            oct = X509_EXTENSION_get_data(ext);
+
+            /* XXX don't mess with the char representation, even if we otherwise
+             *     need to define the nid!
+             */
+            asn1_size = i2t_ASN1_OBJECT(buf, sizeof buf, obj);
+            if (asn1_size >= sizeof buf) {
+                /* can't be our extension */
+                continue;
+            }
+
+            if (strcmp(buf, "1.3.6.1.4.1.11129.2.4.5")) {
+                /* not SignedCertificateTimestampList extension */
+                continue;
+            }
+
+            /* X509V3_EXT_print(_, ext, _, _); */
+
+            /* we need to get to the ASN1_OCTET_STRING * to get
+             * the data and len.
+             */
+
+            /* i2r_scts(method, ext_str, _, _); */
+
+            ap_log_cdata(APLOG_MARK, APLOG_DEBUG, c, "OCSP SCT list",
+                         oct->data + 2, oct->length - 2, AP_LOG_DATA_SHOW_OFFSET);
+
+        }
+    }
 
     OCSP_RESPONSE_free(rsp);
 
@@ -1615,6 +1671,9 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
         else {
             /* cached */
             rv = cached->validation_result;
+            if (rv != APR_SUCCESS) {
+                ap_log_cerror(APLOG_MARK, APLOG_INFO, rv, c, "bad cached validation result");
+            }
         }
     }
     else {
