@@ -1469,14 +1469,17 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
             obj = X509_EXTENSION_get_object(ext);
             oct = X509_EXTENSION_get_data(ext);
 
-            /* XXX don't mess with the char representation, even if we otherwise
-             *     need to define the nid!
+            /* XXX don't mess with the char representation, even if it means
+             *     that we have to define the nid!
              */
             asn1_size = i2t_ASN1_OBJECT(buf, sizeof buf, obj);
             if (asn1_size >= sizeof buf) {
                 /* can't be our extension */
                 continue;
             }
+
+            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                          "ASN.1 object: %s", buf);
 
             if (strcmp(buf, "1.3.6.1.4.1.11129.2.4.5")) {
                 /* not SignedCertificateTimestampList extension */
