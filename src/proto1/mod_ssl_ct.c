@@ -1481,7 +1481,8 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
             ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                           "ASN.1 object: %s", buf);
 
-            if (strcmp(buf, "1.3.6.1.4.1.11129.2.4.5")) {
+            if (strcmp(buf, "1.3.6.1.4.1.11129.2.4.5")
+                && strcmp(buf, "CT Certificate SCTs")) { /* 1.0.2-beta1 has a long name */
                 /* not SignedCertificateTimestampList extension */
                 continue;
             }
