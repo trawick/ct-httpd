@@ -91,16 +91,32 @@ Index: modules/ssl/ssl_engine_io.c
  /*  _________________________________________________________________
  **
  **  I/O Hooks
-@@ -1208,6 +1211,9 @@
+@@ -1119,6 +1122,8 @@
+         const char *hostname_note = apr_table_get(c->notes,
+                                                   "proxy-request-hostname");
+         BOOL proxy_ssl_check_peer_ok = TRUE;
++        int post_handshake_rc = OK;
++
+         sc = mySrvConfig(server);
+ 
+ #ifdef HAVE_TLSEXT
+@@ -1208,11 +1213,15 @@
              }
          }
  
 +        /* call hook now that handshake is completely finished */
-+        ap_run_ssl_proxy_post_handshake(server, c);
++        post_handshake_rc = ap_run_ssl_proxy_post_handshake(server, c);
 +
          if (cert) {
              X509_free(cert);
          }
+ 
+-        if (proxy_ssl_check_peer_ok != TRUE) {
++        if (proxy_ssl_check_peer_ok != TRUE
++            || (post_handshake_rc != OK && post_handshake_rc != DECLINED)) {
+             /* ensure that the SSL structures etc are freed, etc: */
+             ssl_filter_io_shutdown(filter_ctx, c, 1);
+             apr_table_setn(c->notes, "SSL_connect_rv", "err");
 Index: modules/ssl/ssl_engine_kernel.c
 ===================================================================
 --- modules/ssl/ssl_engine_kernel.c	(revision 1571369)

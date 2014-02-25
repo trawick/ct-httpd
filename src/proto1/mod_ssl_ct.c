@@ -20,8 +20,6 @@
  * + Proxy: how much can we verify each SCT on-line?  Currently we just
  *   check that we can walk through the SCTs in the list via the length
  *   fields.
- * + Proxy should have a setting that aborts when the backend doesn't send
- *   an SCT.
  *
  * + Configuration kludges
  *   . ??
@@ -117,6 +115,11 @@ typedef struct ct_server_config {
     const char *ct_tools_dir;
     const char *ct_exe;
     apr_time_t max_sct_age;
+#define PROXY_AWARENESS_UNSET -1
+#define PROXY_OBLIVIOUS        1
+#define PROXY_AWARE            2 /* default */
+#define PROXY_REQUIRE          3
+    int proxy_awareness;
 } ct_server_config;
 
 typedef struct cert_chain {
@@ -1014,6 +1017,10 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 
     if (!sconf->audit_storage) {
+        /* umm, hard to tell if needed...  must have server with
+         * SSL proxy enabled and server-specific-sconf->proxy_awareness
+         * != PROXY_OBLIVIOUS...
+         */
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "Directive CTAuditStorage is required");
         return HTTP_INTERNAL_SERVER_ERROR;
@@ -1590,9 +1597,15 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
 {
     apr_pool_t *p = c->pool;
     ct_conn_config *conncfg = get_conn_config(c);
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
     int chain_size = sk_X509_num(ctx->chain);
     int extension_index;
     cert_chain *certs;
+
+    if (sconf->proxy_awareness == PROXY_OBLIVIOUS) {
+        return OK;
+    }
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "ssl_ct_ssl_proxy_verify() - get server certificate info");
@@ -1651,6 +1664,13 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
     const char *key;
     ct_cached_server_data *cached;
     ct_conn_config *conncfg = get_conn_config(c);
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
+    int validation_error = 0, missing_sct_error = 0;
+
+    if (sconf->proxy_awareness == PROXY_OBLIVIOUS) {
+        return OK;
+    }
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "finally at the point where we can see where SCTs came from"
@@ -1690,6 +1710,11 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
             new_server_data->validation_result = 
                 rv = validate_server_data(p, c, conncfg->certs, conncfg);
 
+
+            if (rv != APR_SUCCESS) {
+                validation_error = 1;
+            }
+
             ctutil_thread_mutex_lock(cached_server_data_mutex);
 
             if ((cached = apr_hash_get(cached_server_data, key, APR_HASH_KEY_STRING))) {
@@ -1717,12 +1742,14 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
             /* cached */
             rv = cached->validation_result;
             if (rv != APR_SUCCESS) {
+                validation_error = 1;
                 ap_log_cerror(APLOG_MARK, APLOG_INFO, rv, c, "bad cached validation result");
             }
         }
     }
     else {
         /* No SCTs at all; consult configuration to know what to do. */
+        missing_sct_error = 1;
     }
 
     if (conncfg->certs) {
@@ -1739,7 +1766,15 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
                   cached ? "already saved" : "seen for the first time",
                   c);
 
-    return rv == APR_SUCCESS ? OK : rv;
+    if (sconf->proxy_awareness == PROXY_REQUIRE) {
+        if (missing_sct_error || validation_error) {
+            ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                          "Forbidding access to backend server; no valid SCTs");
+            return HTTP_FORBIDDEN;
+        }
+    }
+
+    return OK;
 }
 
 static int server_extension_callback_1(SSL *ssl, unsigned short ext_type,
@@ -1846,10 +1881,12 @@ static int ssl_ct_ssl_new_client_pre_handshake(server_rec *s, conn_rec *c, SSL *
 static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, int is_proxy, SSL_CTX *ssl_ctx)
 {
     ct_callback_info *cbi = apr_pcalloc(p, sizeof *cbi);
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
 
     cbi->s = s;
 
-    if (is_proxy) {
+    if (is_proxy && sconf->proxy_awareness != PROXY_OBLIVIOUS) {
         /* _cli_ = "client" */
         if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         client_extension_callback_1,
@@ -1868,7 +1905,7 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, 
         SSL_CTX_set_tlsext_status_cb(ssl_ctx, ocsp_resp_cb);
         SSL_CTX_set_tlsext_status_arg(ssl_ctx, cbi);
     }
-    else {
+    else if (!is_proxy) {
         /* _srv_ = "server" */
         if (!SSL_CTX_set_custom_srv_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         server_extension_callback_1,
@@ -1990,60 +2027,62 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
     apr_pool_cleanup_register(p, service_thread, wait_for_service_thread,
                               apr_pool_cleanup_null);
 
-    rv = apr_thread_mutex_create(&audit_file_mutex, APR_THREAD_MUTEX_DEFAULT,
-                                 p);
-    if (rv == APR_SUCCESS) {
-        rv = apr_thread_mutex_create(&cached_server_data_mutex,
-                                     APR_THREAD_MUTEX_DEFAULT,
-                                     p);
-    }
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                     "could not allocate a thread mutex");
-        /* might crash due to lack of checking for initialized data in all the
-         * right places
-         */
-        return;
-    }
+    if (sconf->proxy_awareness != PROXY_OBLIVIOUS) {
+        rv = apr_thread_mutex_create(&audit_file_mutex,
+                                     APR_THREAD_MUTEX_DEFAULT, p);
+        if (rv == APR_SUCCESS) {
+            rv = apr_thread_mutex_create(&cached_server_data_mutex,
+                                         APR_THREAD_MUTEX_DEFAULT,
+                                         p);
+        }
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                         "could not allocate a thread mutex");
+            /* might crash due to lack of checking for initialized data in all
+             * the right places
+             */
+            return;
+        }
 
-    audit_basename = apr_psprintf(p, "audit_%" APR_PID_T_FMT,
-                                  getpid());
-    rv = ctutil_path_join((char **)&audit_fn_perm, sconf->audit_storage,
-                          audit_basename, p, s);
-    if (rv != APR_SUCCESS) {
-        audit_fn_perm = NULL;
-        audit_fn_active = NULL;
-        return;
-    }
+        audit_basename = apr_psprintf(p, "audit_%" APR_PID_T_FMT,
+                                      getpid());
+        rv = ctutil_path_join((char **)&audit_fn_perm, sconf->audit_storage,
+                              audit_basename, p, s);
+        if (rv != APR_SUCCESS) {
+            audit_fn_perm = NULL;
+            audit_fn_active = NULL;
+            return;
+        }
 
-    audit_fn_active = apr_pstrcat(p, audit_fn_perm, ".tmp", NULL);
-    audit_fn_perm = apr_pstrcat(p, audit_fn_perm, ".out", NULL);
+        audit_fn_active = apr_pstrcat(p, audit_fn_perm, ".tmp", NULL);
+        audit_fn_perm = apr_pstrcat(p, audit_fn_perm, ".out", NULL);
 
-    if (ctutil_file_exists(p, audit_fn_active)) {
-        ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
-                     "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
-                     audit_fn_active);
-        apr_file_remove(audit_fn_active, p);
-    }
+        if (ctutil_file_exists(p, audit_fn_active)) {
+            ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
+                         "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
+                         audit_fn_active);
+            apr_file_remove(audit_fn_active, p);
+        }
 
-    if (ctutil_file_exists(p, audit_fn_perm)) {
-        ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
-                     "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
-                     audit_fn_perm);
-        apr_file_remove(audit_fn_perm, p);
-    }
+        if (ctutil_file_exists(p, audit_fn_perm)) {
+            ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
+                         "ummm, pid-specific file %s was reused before audit grabbed it! (removing)",
+                         audit_fn_perm);
+            apr_file_remove(audit_fn_perm, p);
+        }
 
-    rv = apr_file_open(&audit_file, audit_fn_active,
-                       APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
-                       |APR_FOPEN_BINARY|APR_FOPEN_BUFFERED|APR_FOPEN_NOCLEANUP,
-                       APR_FPROT_OS_DEFAULT, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                     "can't create %s", audit_fn_active);
-        audit_file = NULL;
-    }
+        rv = apr_file_open(&audit_file, audit_fn_active,
+                           APR_FOPEN_WRITE|APR_FOPEN_CREATE|APR_FOPEN_TRUNCATE
+                           |APR_FOPEN_BINARY|APR_FOPEN_BUFFERED|APR_FOPEN_NOCLEANUP,
+                           APR_FPROT_OS_DEFAULT, p);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                         "can't create %s", audit_fn_active);
+            audit_file = NULL;
+        }
 
-    apr_pool_cleanup_register(p, s, inactivate_audit_file, apr_pool_cleanup_null);
+        apr_pool_cleanup_register(p, s, inactivate_audit_file, apr_pool_cleanup_null);
+    } /* !PROXY_OBLIVIOUS */
 }
 
 static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
@@ -2052,6 +2091,7 @@ static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
         (ct_server_config *)apr_pcalloc(p, sizeof(ct_server_config));
 
     conf->max_sct_age = apr_time_from_sec(3600);
+    conf->proxy_awareness = PROXY_AWARENESS_UNSET;
     
     return conf;
 }
@@ -2072,6 +2112,10 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
     conf->max_sct_age = base->max_sct_age;
+
+    conf->proxy_awareness = (virt->proxy_awareness != PROXY_AWARENESS_UNSET)
+        ? virt->proxy_awareness
+        : base->proxy_awareness;
 
     return conf;
 }
@@ -2260,6 +2304,28 @@ static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }    
 
+static const char *ct_proxy_awareness(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+
+    if (!strcasecmp(arg, "oblivious")) {
+        sconf->proxy_awareness = PROXY_OBLIVIOUS;
+    }
+    else if (!strcasecmp(arg, "aware")) {
+        sconf->proxy_awareness = PROXY_AWARE;
+    }
+    else if (!strcasecmp(arg, "require")) {
+        sconf->proxy_awareness = PROXY_REQUIRE;
+    }
+    else {
+        return apr_pstrcat(cmd->pool, "CTProxyAwareness: Invalid argument \"",
+                           arg, "\"", NULL);
+    }
+
+    return NULL;
+}
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
@@ -2272,6 +2338,11 @@ static const command_rec ct_cmds[] =
                   "Location of certificate-transparency.org tools"),
     AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
                   "Max age of SCT obtained from log before refresh"),
+    AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL, RSRC_CONF,
+                  "\"oblivious\" to neither ask for nor check SCTs, "
+                  "\"aware\" to ask for and process SCTs but allow all connections, "
+                  "or \"require\" to abort backend connections if an acceptable "
+                  "SCT is not provided"),
     {NULL}
 };
 

@@ -5,8 +5,8 @@ Development Stages for CT in httpd
 
 ## Current stage (Feb 25)
 
-* Proxy: minimal on-line verification of each SCT
-* Proxy: Have setting to abort when the backend doesn't send an SCT which passes minimal verification
+* TODO Proxy: minimal on-line verification of each SCT
+* DONE Proxy: Have setting to abort when the backend doesn't send an SCT which passes minimal verification
 
 ## Expected level of functionality
 
