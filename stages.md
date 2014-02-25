@@ -3,6 +3,11 @@ Development Stages for CT in httpd
 
 # Prototype 1
 
+## Current stage (Feb 25)
+
+* Proxy: minimal on-line verification of each SCT
+* Proxy: Have setting to abort when the backend doesn't send an SCT which passes minimal verification
+
 ## Expected level of functionality
 
 * Web server can obtain SCTs from a statically configured set of logs.
@@ -30,8 +35,8 @@ what looks like a build nightmare.
 ### First, see the "Issues" section near the top of [src/proto1/mod_ssl_ct.c](https://github.com/trawick/ct-httpd/blob/master/src/proto1/mod_ssl_ct.c).
 ### Use it like this:
 
-* Build OpenSSL 1.0.2
-* Patch httpd trunk with src/proto1/httpd.patch (using OpenSSL 1.0.2)
+* Build OpenSSL 1.0.2-beta1
+* Patch httpd trunk with src/proto1/httpd.patch (using OpenSSL 1.0.2-beta1)
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
 ```
