@@ -1662,7 +1662,7 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
      * SCTs from the TLS extension (if any) in ct_conn_config.
      */
 
-    if (conncfg->cert_sct_list || !conncfg->serverhello_sct_list
+    if (conncfg->cert_sct_list || conncfg->serverhello_sct_list
         || conncfg->ocsp_sct_list) {
 
         /* The key is critical to avoiding validating and queueing of
