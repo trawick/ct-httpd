@@ -384,6 +384,19 @@ apr_uint64_t ctutil_deserialize_uint64(const unsigned char *mem)
     return val;
 }
 
+apr_uint16_t ctutil_deserialize_uint16(const unsigned char *mem)
+{
+    apr_uint16_t val = 0;
+    int i;
+
+    for (i = 0; i < sizeof(val); i++) {
+        val = (val << 8) | *mem;
+        mem += 1;
+    }
+
+    return val;
+}
+
 /* all this deserialization crap is of course from
  * c-t/src/proto/serializer.cc
  */

@@ -275,6 +275,11 @@ typedef struct {
     apr_uint64_t timestamp;
     apr_time_t time;
     char timestr[APR_RFC822_DATE_LEN];
+    apr_uint16_t extlen;
+    unsigned char hash_alg;
+    unsigned char sig_alg;
+    apr_uint16_t siglen;
+    unsigned char *sig;
 } sct_fields_t;
 
 static apr_status_t parse_sct(const char *source,
@@ -282,6 +287,9 @@ static apr_status_t parse_sct(const char *source,
                               apr_size_t len, sct_fields_t *fields)
 {
     const unsigned char *cur;
+    apr_size_t orig_len = len;
+
+    memset(fields, 0, sizeof *fields);
 
     if (len < 1 + 32 + 8) {
         /* no room for header */
@@ -295,18 +303,85 @@ static apr_status_t parse_sct(const char *source,
 
     fields->version = *cur;
     cur++;
+    len -= 1;
     memcpy(fields->logid, cur, 32);
     cur += 32;
+    len -= 32;
     fields->timestamp = ctutil_deserialize_uint64(cur);
     cur += 8;
+    len -= 8;
 
     fields->time = apr_time_from_msec(fields->timestamp);
 
+    /* XXX maybe do this only if log level is such that we'll
+     *     use it later?
+     */
     apr_rfc822_date(fields->timestr, fields->time);
 
+
+    if (len < 2) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "SCT size %" APR_SIZE_T_FMT " has no space for extension "
+                     "len", orig_len);
+        return APR_EINVAL;
+    }
+
+    fields->extlen = ctutil_deserialize_uint16(cur);
+    cur += 2;
+    len -= 2;
+
+    if (fields->extlen != 0) {
+        if (fields->extlen < len) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                         "SCT size %" APR_SIZE_T_FMT " has no space for "
+                         "%hu bytes of extensions",
+                         orig_len, fields->extlen);
+            return APR_EINVAL;
+        }
+
+        /* can't do anything with extensions */
+        cur += fields->extlen;
+        len -= fields->extlen;
+    }
+
+    if (len < 4) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "SCT size %" APR_SIZE_T_FMT " has no space for "
+                     "hash algorithm, signature algorithm, and signature len",
+                     orig_len);
+        return APR_EINVAL;
+    }
+
+    fields->hash_alg = *cur;
+    cur += 1;
+    len -= 1;
+    fields->sig_alg = *cur;
+    cur += 1;
+    len -= 1;
+    fields->siglen = ctutil_deserialize_uint16(cur);
+    cur += 2;
+    len -= 2;
+
+    if (fields->siglen < len) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "SCT has no space for signature");
+        return APR_EINVAL;
+    }
+
+    fields->sig = malloc(fields->siglen);
+    memcpy(fields->sig, cur, fields->siglen);
+    cur += fields->siglen;
+    len -= fields->siglen;
+
+    /* could still be extensions within the signed part of the SCT */
+
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                 "SCT from %s has version %d timestamp %s",
-                 source, fields->version, fields->timestr);
+                 "SCT from %s: version %d timestamp %s hash alg %d sig alg %d",
+                 source, fields->version, fields->timestr,
+                 fields->hash_alg, fields->sig_alg);
+    ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Signature",
+                fields->sig, fields->siglen,
+                AP_LOG_DATA_SHOW_OFFSET);
 
     return APR_SUCCESS;
 }
@@ -417,6 +492,10 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
         rv = parse_sct(cur_sct_file,
                        s, (const unsigned char *)scts, scts_size, &fields);
+        if (fields.sig) {
+            free(fields.sig);
+            fields.sig = NULL;
+        }
         if (rv != APR_SUCCESS) {
             break;
         }
@@ -1438,6 +1517,10 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                 sct = sct_elts[i];
                 tmprv = parse_sct("backend server",
                                   c->base_server, sct.data, sct.len, &fields);
+                if (fields.sig) {
+                    free(fields.sig);
+                    fields.sig = NULL;
+                }
                 if (tmprv != APR_SUCCESS) {
                     rv = tmprv;
                 }
