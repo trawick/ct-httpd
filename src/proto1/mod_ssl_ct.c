@@ -17,9 +17,7 @@
 /*
  * Issues
  *
- * + Proxy: how much can we verify each SCT on-line?  Currently we just
- *   check that we can walk through the SCTs in the list via the length
- *   fields.
+ * + Proxy: We should verify the signature of received SCTs on-line.
  *
  * + Configuration kludges
  *   . ??
@@ -34,6 +32,7 @@
  *   . checking for SCT list in stapled OCSP response relies on looking at
  *     the string representation of the ASN.1 object (slow, probably isn't
  *     stable)
+ *   . no checking of max timestamp in SCT
  *
  * + Everything else
  *   . ??
@@ -279,8 +278,30 @@ typedef struct {
     unsigned char hash_alg;
     unsigned char sig_alg;
     apr_uint16_t siglen;
-    unsigned char *sig;
+    const unsigned char *sig;
+    const unsigned char *signed_data;
+    apr_size_t signed_data_len;
 } sct_fields_t;
+
+static apr_status_t verify_signature(sct_fields_t *sctf,
+                                     EVP_PKEY *pkey)
+{
+    EVP_MD_CTX ctx;
+    int rc;
+
+    if (sctf->signed_data == NULL) {
+        return APR_EINVAL;
+    }
+
+    EVP_MD_CTX_init(&ctx);
+    ap_assert(1 == EVP_VerifyInit(&ctx, EVP_sha256()));
+    ap_assert(1 == EVP_VerifyUpdate(&ctx, sctf->signed_data,
+                                    sctf->signed_data_len));
+    rc = EVP_VerifyFinal(&ctx, sctf->sig, sctf->siglen, pkey);
+    EVP_MD_CTX_cleanup(&ctx);
+
+    return rc == 1 ? APR_SUCCESS : APR_EINVAL;
+}
 
 static apr_status_t parse_sct(const char *source,
                               server_rec *s, const unsigned char *sct,
@@ -368,10 +389,16 @@ static apr_status_t parse_sct(const char *source,
         return APR_EINVAL;
     }
 
-    fields->sig = malloc(fields->siglen);
-    memcpy(fields->sig, cur, fields->siglen);
+    fields->sig = cur;
     cur += fields->siglen;
     len -= fields->siglen;
+
+    /* XXX Which part is signed? */
+    fields->signed_data = NULL;
+    fields->signed_data_len = 0;
+    /* See certificate-transparency/src/proto/serializer.cc,
+     * method Serializer::SerializeV1CertSCTSignatureInput()
+     */
 
     /* could still be extensions within the signed part of the SCT */
 
@@ -492,10 +519,6 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
         rv = parse_sct(cur_sct_file,
                        s, (const unsigned char *)scts, scts_size, &fields);
-        if (fields.sig) {
-            free(fields.sig);
-            fields.sig = NULL;
-        }
         if (rv != APR_SUCCESS) {
             break;
         }
@@ -1508,6 +1531,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             ct_sct_data *sct_elts;
             ct_sct_data sct;
             sct_fields_t fields;
+            EVP_PKEY *pkey = NULL;
 
             ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                           "%d SCTs received total", conncfg->all_scts->nelts);
@@ -1517,19 +1541,28 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                 sct = sct_elts[i];
                 tmprv = parse_sct("backend server",
                                   c->base_server, sct.data, sct.len, &fields);
-                if (fields.sig) {
-                    free(fields.sig);
-                    fields.sig = NULL;
-                }
                 if (tmprv != APR_SUCCESS) {
                     rv = tmprv;
                 }
                 else {
                     if (fields.time > apr_time_now()) {
-                        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                                       "Server sent SCT not yet valid (timestamp %s)",
                                       fields.timestr);
                         rv = APR_EINVAL;
+                    }
+
+                    /* XXX Let the admin configure public key(s) for some
+                     *     log(s) to allow us to check the signature when
+                     *     we see the SCT for the first time.
+                     */
+                    if (pkey) { /* Try to find key via log id. */
+                        rv = verify_signature(&fields, pkey);
+                        if (rv != APR_SUCCESS) {
+                            ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                                          "Server sent SCT with invalid signature");
+                            rv = APR_EINVAL;
+                        }
                     }
                 }                
             }
