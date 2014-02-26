@@ -371,6 +371,19 @@ void ctutil_log_array(const char *file, int line, int module_index,
     }
 }
 
+apr_uint64_t ctutil_deserialize_uint64(const unsigned char *mem)
+{
+    apr_uint64_t val = 0;
+    int i;
+
+    for (i = 0; i < sizeof(val); i++) {
+        val = (val << 8) | *mem;
+        mem += 1;
+    }
+
+    return val;
+}
+
 /* all this deserialization crap is of course from
  * c-t/src/proto/serializer.cc
  */

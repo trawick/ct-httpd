@@ -63,4 +63,6 @@ void ctutil_log_array(const char *file, int line, int module_index,
 apr_status_t ctutil_read_var_bytes(unsigned char **mem, apr_size_t *avail,
                                    unsigned char **start, apr_size_t *len);
 
+apr_uint64_t ctutil_deserialize_uint64(const unsigned char *mem);
+
 #endif /* SSL_CT_UTIL_H */

@@ -269,6 +269,48 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(!ctutil_in_array(TESTURL1 "x", arr));
 }
 
+typedef struct {
+    unsigned char version;
+    unsigned char logid[32];
+    apr_uint64_t timestamp;
+    apr_time_t time;
+    char timestr[APR_RFC822_DATE_LEN];
+} sct_fields_t;
+
+static apr_status_t parse_sct(const char *source,
+                              server_rec *s, const unsigned char *sct,
+                              apr_size_t len, sct_fields_t *fields)
+{
+    const unsigned char *cur;
+
+    if (len < 1 + 32 + 8) {
+        /* no room for header */
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                     "SCT size %" APR_SIZE_T_FMT " is too small",
+                     len);
+        return APR_EINVAL;
+    }
+
+    cur = sct;
+
+    fields->version = *cur;
+    cur++;
+    memcpy(fields->logid, cur, 32);
+    cur += 32;
+    fields->timestamp = ctutil_deserialize_uint64(cur);
+    cur += 8;
+
+    fields->time = apr_time_from_msec(fields->timestamp);
+
+    apr_rfc822_date(fields->timestr, fields->time);
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                 "SCT from %s has version %d timestamp %s",
+                 source, fields->version, fields->timestr);
+
+    return APR_SUCCESS;
+}
+
 /* a server's SCT-related storage on disk:
  *
  *   <rootdir>/<fingerprint>/servercerts.pem
@@ -313,7 +355,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     char *tmp_collated_fn, *collated_fn;
     const char *cur_sct_file;
     const char * const *elts;
-    int i;
+    int i, scts_written = 0;
 
     rv = ctutil_path_join(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
@@ -325,6 +367,9 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
      *       re-fetched).
      *       That allows the admin to see the last processing by looking
      *       at the timestamp.
+     *       Rechecking even if no SCTs are new allows SCTs which were not
+     *       yet valid originally (just submitted to a log) to be used as
+     *       soon as practical.
      */
     tmp_collated_fn = apr_pstrcat(p, collated_fn, ".tmp", NULL);
 
@@ -357,7 +402,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
     for (i = 0; i < arr->nelts; i++) {
         char *scts;
-        apr_size_t scts_size;;
+        apr_size_t scts_size;
+        sct_fields_t fields;
 
         cur_sct_file = elts[i];
 
@@ -367,6 +413,19 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         rv = ctutil_read_file(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
         if (rv != APR_SUCCESS) {
             break;
+        }
+
+        rv = parse_sct(cur_sct_file,
+                       s, (const unsigned char *)scts, scts_size, &fields);
+        if (rv != APR_SUCCESS) {
+            break;
+        }
+
+        if (fields.time > apr_time_now()) {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+                         "SCT in file %s has timestamp in future (%s), skipping",
+                         cur_sct_file, fields.timestr);
+            continue;
         }
 
         overall_len += scts_size + 2; /* include size header */
@@ -383,6 +442,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
                          scts_size, tmp_collated_fn);
             break;
         }
+
+        scts_written++;
     }
 
     if (rv == APR_SUCCESS) {
@@ -407,7 +468,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         }
     }
 
-    if (rv == APR_SUCCESS) {
+    if (rv == APR_SUCCESS && scts_written) {
         int replacing = ctutil_file_exists(p, collated_fn);
 
         if (replacing) {
@@ -1363,8 +1424,32 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             rv = APR_EINVAL;
         }
         else {
+            apr_status_t tmprv;
+            int i;
+            ct_sct_data *sct_elts;
+            ct_sct_data sct;
+            sct_fields_t fields;
+
             ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                           "%d SCTs received total", conncfg->all_scts->nelts);
+
+            sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
+            for (i = 0; i < conncfg->all_scts->nelts; i++) {
+                sct = sct_elts[i];
+                tmprv = parse_sct("backend server",
+                                  c->base_server, sct.data, sct.len, &fields);
+                if (tmprv != APR_SUCCESS) {
+                    rv = tmprv;
+                }
+                else {
+                    if (fields.time > apr_time_now()) {
+                        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                                      "Server sent SCT not yet valid (timestamp %s)",
+                                      fields.timestr);
+                        rv = APR_EINVAL;
+                    }
+                }                
+            }
         }
     }
 
