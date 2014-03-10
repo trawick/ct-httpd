@@ -1,3 +1,64 @@
+Index: modules/proxy/mod_proxy.h
+===================================================================
+--- modules/proxy/mod_proxy.h	(revision 1575947)
++++ modules/proxy/mod_proxy.h	(working copy)
+@@ -533,6 +533,12 @@
+                           proxy_server_conf *conf))
+ 
+ /**
++ * proxy http cleanup hook.
++ * It is called for HTTP proxy just before ap_proxy_release_connection().
++ */
++AP_DECLARE_HOOK(int, proxy_http_cleanup,(request_rec *r, conn_rec *origin))
++
++/**
+  * request status hook
+  * It is called after all proxy processing has been done.  This gives other
+  * modules a chance to create default content on failure, for example
+Index: modules/proxy/mod_proxy_http.c
+===================================================================
+--- modules/proxy/mod_proxy_http.c	(revision 1575958)
++++ modules/proxy/mod_proxy_http.c	(working copy)
+@@ -19,6 +19,10 @@
+ #include "mod_proxy.h"
+ #include "ap_regex.h"
+ 
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int, proxy_http_cleanup,
++                                   (request_rec *r, conn_rec *origin),
++                                   (r, origin), OK, DECLINED)
++
+ module AP_MODULE_DECLARE_DATA proxy_http_module;
+ 
+ static int (*ap_proxy_clear_connection_fn)(request_rec *r, apr_table_t *headers) =
+@@ -1879,6 +1883,7 @@
+     proxy_conn_rec *backend = NULL;
+     int is_ssl = 0;
+     conn_rec *c = r->connection;
++    conn_rec *origin = NULL;
+     int retry = 0;
+     /*
+      * Use a shorter-lived pool to reduce memory usage
+@@ -2019,6 +2024,7 @@
+         }
+ 
+         /* Step Five: Receive the Response... Fall thru to cleanup */
++        origin = backend->connection;
+         status = ap_proxy_http_process_response(p, r, &backend, worker,
+                                                 conf, server_portstr);
+ 
+@@ -2027,6 +2033,7 @@
+ 
+     /* Step Six: Clean Up */
+ cleanup:
++    ap_run_proxy_http_cleanup(r, origin);
+     if (backend) {
+         if (status != OK)
+             backend->close = 1;
+@@ -2076,4 +2083,3 @@
+     NULL,              /* command apr_table_t */
+     ap_proxy_http_register_hook/* register hooks */
+ };
+-
 Index: modules/ssl/mod_ssl.c
 ===================================================================
 --- modules/ssl/mod_ssl.c	(revision 1575947)

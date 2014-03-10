@@ -3,7 +3,7 @@ Development Stages for CT in httpd
 
 # Prototype 1
 
-## Current stage (Feb ??)
+## Current stage (Mar ??)
 
 * ??
 
@@ -18,7 +18,6 @@ Development Stages for CT in httpd
 
 ## Implementation shortcuts
 
-* Proxy (TLS client): Don't check for SCTs in OCSP responses.  (Currently mod\_ssl\_ct notices when there is a stapled OCSP response, but it doesn't yet know how to find any SCTs there.)
 * Add any necessary hooks to mod\_ssl to minimize collision with other
 active development, and implement new program logic in mod\_ssl\_ct.
 * mod\_ssl\_ct will use certificate-transparency project **executable
@@ -63,3 +62,7 @@ what looks like a build nightmare.
 * Each certificate is represented by CERT_START (0x0002) and two-byte length followed by the certificate in DER.
 * Each SCT is represented by SCT_START (0x0003) and two-byte length followed by the SCT.
 
+### Support for logging what happened
+
+* proxy and server: log the SSL\_CT\_PEER\_STATUS envvar to see if peer is aware
+* proxy: log the SSL\_PROXY\_SCT\_SOURCES envvar to see where SCTs came from

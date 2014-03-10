@@ -76,6 +76,7 @@
 #include "ap_mpm.h"
 
 #include "ssl_hooks.h"
+#include "mod_proxy.h"
 
 #include "ssl_ct_util.h"
 
@@ -88,7 +89,11 @@
 #define DOTEXE ""
 #endif
 
-#define STATUS_VAR          "SSL_CT_PEER_STATUS"
+#define STATUS_VAR                "SSL_CT_PEER_STATUS"
+#define STATUS_VAR_AWARE_VAL      "peer-aware"
+#define STATUS_VAR_UNAWARE_VAL    "peer-unaware"
+
+#define PROXY_SCT_SOURCES_VAR     "SSL_PROXY_SCT_SOURCES"
 
 #define DAEMON_NAME         "SCT maintenance daemon"
 #define SERVICE_THREAD_NAME "service thread"
@@ -1347,6 +1352,7 @@ static void server_cert_has_sct_list(conn_rec *c)
 {
     ct_conn_config *conncfg = get_conn_config(c);
     conncfg->server_cert_has_sct_list = 1;
+    conncfg->peer_ct_aware = 1;
 }
 
 /* Look at SSLClient::VerifyCallback() and WriteSSLClientCTData()
@@ -1728,6 +1734,7 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
             /* i2r_scts(method, ext_str, _, _); */
 
             conncfg->ocsp_has_sct_list = 1;
+            conncfg->peer_ct_aware = 1;
             conncfg->ocsp_sct_list_size = oct->length - 2;
             conncfg->ocsp_sct_list = apr_pmemdup(c->pool, oct->data + 2,
                                                  conncfg->ocsp_sct_list_size);
@@ -1779,6 +1786,7 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
      */
 
     conncfg->serverhello_has_sct_list = 1;
+    conncfg->peer_ct_aware = 1;
     conncfg->serverhello_sct_list = apr_pmemdup(c->pool, in, inlen);
     conncfg->serverhello_sct_list_size = inlen;
     return 1;
@@ -2128,10 +2136,10 @@ static int ssl_ct_post_read_request(request_rec *r)
       ap_get_module_config(r->connection->conn_config, &ssl_ct_module);
 
     if (conncfg && conncfg->peer_ct_aware) {
-        apr_table_set(r->subprocess_env, STATUS_VAR, "peer-aware");
+        apr_table_set(r->subprocess_env, STATUS_VAR, STATUS_VAR_AWARE_VAL);
     }
     else {
-        apr_table_set(r->subprocess_env, STATUS_VAR, "peer-unaware");
+        apr_table_set(r->subprocess_env, STATUS_VAR, STATUS_VAR_UNAWARE_VAL);
     }
 
     return DECLINED;
@@ -2321,6 +2329,33 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     return conf;
 }
 
+static int ssl_ct_http_cleanup(request_rec *r, conn_rec *origin) {
+    ct_conn_config *conncfg = get_conn_config(origin);
+    char *list;
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "ssl_ct_http_cleanup, %d%d%d",
+                  conncfg->server_cert_has_sct_list,
+                  conncfg->serverhello_has_sct_list,
+                  conncfg->ocsp_has_sct_list);
+
+    apr_table_set(r->subprocess_env, STATUS_VAR,
+                  conncfg->peer_ct_aware ? STATUS_VAR_AWARE_VAL : STATUS_VAR_UNAWARE_VAL);
+
+    list = apr_pstrcat(r->pool,
+                       conncfg->server_cert_has_sct_list ? "certext," : "",
+                       conncfg->serverhello_has_sct_list ? "tlsext," : "",
+                       conncfg->ocsp_has_sct_list ? "ocsp" : "",
+                       NULL);
+    if (strlen(list)) {
+        list[strlen(list) - 1] = '\0';
+    }
+
+    apr_table_set(r->subprocess_env, PROXY_SCT_SOURCES_VAR, list);
+
+    return OK;
+}
+
 static void ct_register_hooks(apr_pool_t *p)
 {
     ap_hook_pre_config(ssl_ct_pre_config, NULL, NULL, APR_HOOK_MIDDLE);
@@ -2328,6 +2363,8 @@ static void ct_register_hooks(apr_pool_t *p)
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_child_init(ssl_ct_child_init, NULL, NULL, APR_HOOK_MIDDLE);
+    AP_OPTIONAL_HOOK(proxy_http_cleanup, ssl_ct_http_cleanup, NULL, NULL,
+                     APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
                      APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
