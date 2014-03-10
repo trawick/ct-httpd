@@ -1307,7 +1307,7 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
     }
 }
 
-static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx, apr_array_header_t *cert_files)
+static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx)
 {
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
@@ -1793,7 +1793,7 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
  * . This code, unlike SSLClient::VerifyCallback(), doesn't look
  *   at the OpenSSL "input" chain.
  */
-static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c, SSL *ssl,
+static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
                                    X509_STORE_CTX *ctx)
 {
     apr_pool_t *p = c->pool;
@@ -2063,7 +2063,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
     }
 }
 
-static int ssl_ct_ssl_new_client_pre_handshake(server_rec *s, conn_rec *c, SSL *ssl)
+static int ssl_ct_ssl_new_client_pre_handshake(conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "client connected (pre-handshake)");
 
@@ -2079,7 +2079,7 @@ static int ssl_ct_ssl_new_client_pre_handshake(server_rec *s, conn_rec *c, SSL *
     return OK;
 }
 
-static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, apr_pool_t *ptemp, int is_proxy, SSL_CTX *ssl_ctx)
+static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, int is_proxy, SSL_CTX *ssl_ctx)
 {
     ct_callback_info *cbi = apr_pcalloc(p, sizeof *cbi);
     ct_server_config *sconf = ap_get_module_config(s->module_config,

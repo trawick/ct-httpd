@@ -1,43 +1,54 @@
 Index: modules/ssl/mod_ssl.c
 ===================================================================
---- modules/ssl/mod_ssl.c	(revision 1571369)
+--- modules/ssl/mod_ssl.c	(revision 1575947)
 +++ modules/ssl/mod_ssl.c	(working copy)
 @@ -37,6 +37,9 @@
  int ssl_running_on_valgrind = 0;
  #endif
  
-+AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_new_client_pre_handshake,(server_rec *s,conn_rec *c,SSL *ssl),
-+                                   (s,c,ssl),OK,DECLINED);
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_new_client_pre_handshake,(conn_rec *c,SSL *ssl),
++                                   (c,ssl),OK,DECLINED);
 +
  /*
   *  the table of configuration directives we provide
   */
-@@ -498,6 +501,8 @@
+@@ -466,6 +469,7 @@
+     SSL *ssl;
+     SSLConnRec *sslconn = myConnConfig(c);
+     char *vhost_md5;
++    int rc;
+     modssl_ctx_t *mctx;
+     server_rec *server;
+ 
+@@ -498,6 +502,11 @@
          return DECLINED; /* XXX */
      }
  
-+    ap_run_ssl_new_client_pre_handshake(server, c, ssl);
++    rc = ap_run_ssl_new_client_pre_handshake(c, ssl);
++    if (rc != OK && rc != DECLINED) {
++        return rc;
++    }
 +
      vhost_md5 = ap_md5_binary(c->pool, (unsigned char *)sc->vhost_id,
                                sc->vhost_id_len);
  
 Index: modules/ssl/ssl_engine_init.c
 ===================================================================
---- modules/ssl/ssl_engine_init.c	(revision 1571369)
+--- modules/ssl/ssl_engine_init.c	(revision 1575947)
 +++ modules/ssl/ssl_engine_init.c	(working copy)
 @@ -29,6 +29,11 @@
  #include "ssl_private.h"
  #include "mpm_common.h"
  
-+AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_server_init,(server_rec *s,SSL_CTX *ctx,apr_array_header_t *cert_files),
-+                                   (s,ctx,cert_files),OK,DECLINED)
-+AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,apr_pool_t *ptemp,int is_proxy,SSL_CTX *ctx),
-+                                   (s,p,ptemp,is_proxy,ctx),OK,DECLINED);
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_server_init,(server_rec *s,SSL_CTX *ctx),
++                                   (s,ctx),OK,DECLINED)
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,int is_proxy,SSL_CTX *ctx),
++                                   (s,p,is_proxy,ctx),OK,DECLINED);
 +
  /*  _________________________________________________________________
  **
  **  Module Initialization
-@@ -248,6 +253,26 @@
+@@ -248,6 +253,25 @@
          return rv;
      }
  
@@ -46,8 +57,7 @@ Index: modules/ssl/ssl_engine_init.c
 +
 +        if (sc->enabled == SSL_ENABLED_TRUE) {
 +            if (sc->server && sc->server->ssl_ctx && sc->server->pks) {
-+                if ((rv = ap_run_ssl_server_init(s, sc->server->ssl_ctx,
-+                                                 sc->server->pks->cert_files)) != APR_SUCCESS) {
++                if ((rv = ap_run_ssl_server_init(s, sc->server->ssl_ctx)) != APR_SUCCESS) {
 +                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, APLOGNO()
 +                                 "Init: ssl_server_init failed");
 +                    return rv;
@@ -64,11 +74,11 @@ Index: modules/ssl/ssl_engine_init.c
      /*
       *  Announce mod_ssl and SSL library in HTTP Server field
       *  as ``mod_ssl/X.X.X OpenSSL/X.X.X''
-@@ -815,6 +840,12 @@
+@@ -815,6 +839,12 @@
  #endif
      }
  
-+    if ((rv = ap_run_ssl_init_ctx(s, p, ptemp, 
++    if ((rv = ap_run_ssl_init_ctx(s, p,
 +                                  mctx->sc && mctx->sc->proxy_enabled,
 +                                  mctx->ssl_ctx)) != APR_SUCCESS) {
 +        return rv;
@@ -79,7 +89,7 @@ Index: modules/ssl/ssl_engine_init.c
  
 Index: modules/ssl/ssl_engine_io.c
 ===================================================================
---- modules/ssl/ssl_engine_io.c	(revision 1571369)
+--- modules/ssl/ssl_engine_io.c	(revision 1575947)
 +++ modules/ssl/ssl_engine_io.c	(working copy)
 @@ -31,6 +31,9 @@
  #include "mod_ssl.h"
@@ -119,14 +129,14 @@ Index: modules/ssl/ssl_engine_io.c
              apr_table_setn(c->notes, "SSL_connect_rv", "err");
 Index: modules/ssl/ssl_engine_kernel.c
 ===================================================================
---- modules/ssl/ssl_engine_kernel.c	(revision 1571369)
+--- modules/ssl/ssl_engine_kernel.c	(revision 1575947)
 +++ modules/ssl/ssl_engine_kernel.c	(working copy)
 @@ -32,6 +32,9 @@
  #include "mod_ssl.h"
  #include "util_md5.h"
  
-+AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_proxy_verify,(server_rec *s,conn_rec *c,SSL *ssl, X509_STORE_CTX *ctx),
-+                                   (s,c,ssl,ctx),OK,DECLINED);
++AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int,ssl_proxy_verify,(server_rec *s,conn_rec *c,X509_STORE_CTX *ctx),
++                                   (s,c,ctx),OK,DECLINED);
 +
  static void ssl_configure_env(request_rec *r, SSLConnRec *sslconn);
  #ifdef HAVE_TLSEXT
@@ -136,7 +146,7 @@ Index: modules/ssl/ssl_engine_kernel.c
                                 "leaf" : "none"));
  
 +    if (sc->proxy_enabled) {
-+        apr_status_t rv = ap_run_ssl_proxy_verify(s, conn, ssl, ctx);
++        apr_status_t rv = ap_run_ssl_proxy_verify(s, conn, ctx);
 +        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, rv, conn,
 +                      "ssl_proxy_verify %s",
 +                      rv == APR_SUCCESS ? "succeeded" : "failed");
@@ -177,16 +187,16 @@ Index: modules/ssl/ssl_hooks.h
 +#endif
 +#include <openssl/ssl.h>
 +
-+AP_DECLARE_HOOK(int,ssl_server_init,(server_rec *,SSL_CTX *,apr_array_header_t *))
-+AP_DECLARE_HOOK(int,ssl_new_client_pre_handshake,(server_rec *,conn_rec *,SSL *ssl))
-+AP_DECLARE_HOOK(int,ssl_proxy_verify,(server_rec *,conn_rec *,SSL *ssl,X509_STORE_CTX *ctx))
-+AP_DECLARE_HOOK(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,apr_pool_t *ptemp,int is_proxy,SSL_CTX *ctx))
++AP_DECLARE_HOOK(int,ssl_server_init,(server_rec *,SSL_CTX *))
++AP_DECLARE_HOOK(int,ssl_new_client_pre_handshake,(conn_rec *,SSL *ssl))
++AP_DECLARE_HOOK(int,ssl_proxy_verify,(server_rec *,conn_rec *,X509_STORE_CTX *ctx))
++AP_DECLARE_HOOK(int,ssl_init_ctx,(server_rec *s,apr_pool_t *p,int is_proxy,SSL_CTX *ctx))
 +AP_DECLARE_HOOK(int,ssl_proxy_post_handshake,(server_rec *,conn_rec *))
 +
 +#endif /* SSL_HOOKS_H */
 Index: modules/ssl/ssl_private.h
 ===================================================================
---- modules/ssl/ssl_private.h	(revision 1571369)
+--- modules/ssl/ssl_private.h	(revision 1575947)
 +++ modules/ssl/ssl_private.h	(working copy)
 @@ -932,6 +932,8 @@
  extern int ssl_running_on_valgrind;
