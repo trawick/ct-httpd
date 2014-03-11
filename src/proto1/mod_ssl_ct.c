@@ -2314,7 +2314,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
 static int ssl_ct_http_cleanup(request_rec *r, conn_rec *origin) {
     ct_conn_config *conncfg = get_conn_config(origin);
-    char *list;
+    char *list, *last;
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "ssl_ct_http_cleanup, %d%d%d",
@@ -2330,8 +2330,11 @@ static int ssl_ct_http_cleanup(request_rec *r, conn_rec *origin) {
                        conncfg->serverhello_has_sct_list ? "tlsext," : "",
                        conncfg->ocsp_has_sct_list ? "ocsp" : "",
                        NULL);
-    if (strlen(list)) {
-        list[strlen(list) - 1] = '\0';
+    if (*list) {
+        last = list + strlen(list) - 1;
+        if (*last == ',') {
+            *last = '\0';
+        }
     }
 
     apr_table_set(r->subprocess_env, PROXY_SCT_SOURCES_VAR, list);
