@@ -161,32 +161,6 @@ static apr_thread_t *service_thread;
 
 static apr_hash_t *cached_server_data;
 
-/* from c-t/src/log/ct_extensions.cc */
-static int NID_ctEmbeddedSignedCertificateTimestampList;
-
-static X509V3_EXT_METHOD ct_embeddedsctlist_method = {
-    0,  /* ext_nid, NID, will be created by OBJ_create() */
-    0,  /* flags */
-    ASN1_ITEM_ref(ASN1_OCTET_STRING), /* the object is an octet string */
-    0, 0, 0, 0,  /* ignored since the field above is set */
-    /* Create from, and print to, a hex string
-     * Allows to specify the extension configuration like so:
-     * ctEmbeddedSCT = <hexstring_value>
-     * (Unused, as we're not issuing certs.)
-     */
-    (X509V3_EXT_I2S)i2s_ASN1_OCTET_STRING,
-    (X509V3_EXT_S2I)s2i_ASN1_OCTET_STRING,
-    0, 0,
-    0, 0,
-    NULL   /* usr_data */
-};
-
-/* The SCT list embedded in the certificate itself */
-const char kEmbeddedSCTListOID[] = "1.3.6.1.4.1.11129.2.4.2";
-static const char kEmbeddedSCTListSN[] = "ctEmbeddedSCT";
-static const char kEmbeddedSCTListLN[] = "X509v3 Certificate Transparency "
-    "Embedded Signed Certificate Timestamp List";
-
 static const char *audit_fn_perm, *audit_fn_active;
 static apr_file_t *audit_file;
 static apr_thread_mutex_t *audit_file_mutex;
@@ -1791,7 +1765,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
 
     extension_index = 
         X509_get_ext_by_NID(certs->leaf,
-                            NID_ctEmbeddedSignedCertificateTimestampList,
+                            NID_ct_precert_scts,
                             -1);
     /* use X509_get_ext(certs->leaf, extension_index) to obtain X509_EXTENSION * */
 
@@ -1801,7 +1775,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
         server_cert_has_sct_list(c);
         /* as in Cert::ExtensionStructure() */
         ext_struct = X509_get_ext_d2i(certs->leaf,
-                                      NID_ctEmbeddedSignedCertificateTimestampList,
+                                      NID_ct_precert_scts,
                                       NULL, /* ignore criticality of extension */
                                       NULL);
 
@@ -2102,31 +2076,11 @@ static int ssl_ct_post_read_request(request_rec *r)
     return DECLINED;
 }
 
-/* from LoadCtExtensions() in c-t/src/log/ct_extensions.cc */
-static apr_status_t build_extensions(void)
-{
-    /* NID_ctEmbeddedSignedCertificateTimestampList; */
-    ct_embeddedsctlist_method.ext_nid = OBJ_create(kEmbeddedSCTListOID,
-                                                   kEmbeddedSCTListSN,
-                                                   kEmbeddedSCTListLN);
-    ap_assert(ct_embeddedsctlist_method.ext_nid != 0);
-    ap_assert(1 == X509V3_EXT_add(&ct_embeddedsctlist_method));
-    NID_ctEmbeddedSignedCertificateTimestampList =
-      ct_embeddedsctlist_method.ext_nid;
-
-    return APR_SUCCESS;
-}
-
 static int ssl_ct_pre_config(apr_pool_t *pconf, apr_pool_t *plog,
                              apr_pool_t *ptemp)
 {
     apr_status_t rv = ap_mutex_register(pconf, SSL_CT_MUTEX_TYPE, NULL,
                                         APR_LOCK_DEFAULT, 0);
-    if (rv != APR_SUCCESS) {
-        return rv;
-    }
-
-    rv = build_extensions();
     if (rv != APR_SUCCESS) {
         return rv;
     }
