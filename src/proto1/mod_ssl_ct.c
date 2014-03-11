@@ -2312,32 +2312,47 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     return conf;
 }
 
-static int ssl_ct_proxy_http_cleanup(request_rec *r, conn_rec *origin) {
-    ct_conn_config *conncfg = get_conn_config(origin);
-    char *list, *last;
-
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "ssl_ct_proxy_http_cleanup, %d%d%d",
-                  conncfg->server_cert_has_sct_list,
-                  conncfg->serverhello_has_sct_list,
-                  conncfg->ocsp_has_sct_list);
-
-    apr_table_set(r->subprocess_env, STATUS_VAR,
-                  conncfg->peer_ct_aware ? STATUS_VAR_AWARE_VAL : STATUS_VAR_UNAWARE_VAL);
-
-    list = apr_pstrcat(r->pool,
-                       conncfg->server_cert_has_sct_list ? "certext," : "",
-                       conncfg->serverhello_has_sct_list ? "tlsext," : "",
-                       conncfg->ocsp_has_sct_list ? "ocsp" : "",
-                       NULL);
-    if (*list) {
-        last = list + strlen(list) - 1;
-        if (*last == ',') {
-            *last = '\0';
-        }
+static int ssl_ct_proxy_http_cleanup(request_rec *r, conn_rec *origin,
+                                     proxy_conn_rec *backend)
+{
+    if (!origin && backend) {
+        origin = backend->connection;
     }
 
-    apr_table_set(r->subprocess_env, PROXY_SCT_SOURCES_VAR, list);
+    if (origin) {
+        ct_conn_config *conncfg = get_conn_config(origin);
+        char *list, *last;
+
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "ssl_ct_proxy_http_cleanup, %d%d%d",
+                      conncfg->server_cert_has_sct_list,
+                      conncfg->serverhello_has_sct_list,
+                      conncfg->ocsp_has_sct_list);
+
+        apr_table_set(r->subprocess_env, STATUS_VAR,
+                      conncfg->peer_ct_aware ? STATUS_VAR_AWARE_VAL : STATUS_VAR_UNAWARE_VAL);
+
+        list = apr_pstrcat(r->pool,
+                           conncfg->server_cert_has_sct_list ? "certext," : "",
+                           conncfg->serverhello_has_sct_list ? "tlsext," : "",
+                           conncfg->ocsp_has_sct_list ? "ocsp" : "",
+                           NULL);
+        if (*list) {
+            last = list + strlen(list) - 1;
+            if (*last == ',') {
+                *last = '\0';
+            }
+        }
+
+        apr_table_set(r->subprocess_env, PROXY_SCT_SOURCES_VAR, list);
+    }
+    else {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "No backend connection available in "
+                      "ssl_ct_proxy_http_cleanup(); assuming peer unaware");
+        apr_table_set(r->subprocess_env, STATUS_VAR,
+                      STATUS_VAR_UNAWARE_VAL);
+    }
 
     return OK;
 }

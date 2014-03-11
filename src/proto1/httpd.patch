@@ -2,14 +2,15 @@ Index: modules/proxy/mod_proxy.h
 ===================================================================
 --- modules/proxy/mod_proxy.h	(revision 1575947)
 +++ modules/proxy/mod_proxy.h	(working copy)
-@@ -533,6 +533,12 @@
+@@ -533,6 +533,13 @@
                            proxy_server_conf *conf))
  
  /**
 + * proxy http cleanup hook.
 + * It is called for HTTP proxy just before ap_proxy_release_connection().
 + */
-+AP_DECLARE_HOOK(int, proxy_http_cleanup,(request_rec *r, conn_rec *origin))
++AP_DECLARE_HOOK(int, proxy_http_cleanup,(request_rec *r, conn_rec *origin, 
++                                         proxy_conn_rec *backend))
 +
 +/**
   * request status hook
@@ -24,8 +25,8 @@ Index: modules/proxy/mod_proxy_http.c
  #include "ap_regex.h"
  
 +AP_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(int, proxy_http_cleanup,
-+                                   (request_rec *r, conn_rec *origin),
-+                                   (r, origin), OK, DECLINED)
++                                   (request_rec *r, conn_rec *origin, proxy_conn_rec *backend),
++                                   (r, origin, backend), OK, DECLINED)
 +
  module AP_MODULE_DECLARE_DATA proxy_http_module;
  
@@ -50,7 +51,7 @@ Index: modules/proxy/mod_proxy_http.c
  
      /* Step Six: Clean Up */
  cleanup:
-+    ap_run_proxy_http_cleanup(r, origin);
++    ap_run_proxy_http_cleanup(r, origin, backend);
      if (backend) {
          if (status != OK)
              backend->close = 1;
