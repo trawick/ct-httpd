@@ -2312,12 +2312,12 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     return conf;
 }
 
-static int ssl_ct_http_cleanup(request_rec *r, conn_rec *origin) {
+static int ssl_ct_proxy_http_cleanup(request_rec *r, conn_rec *origin) {
     ct_conn_config *conncfg = get_conn_config(origin);
     char *list, *last;
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                  "ssl_ct_http_cleanup, %d%d%d",
+                  "ssl_ct_proxy_http_cleanup, %d%d%d",
                   conncfg->server_cert_has_sct_list,
                   conncfg->serverhello_has_sct_list,
                   conncfg->ocsp_has_sct_list);
@@ -2349,7 +2349,7 @@ static void ct_register_hooks(apr_pool_t *p)
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_child_init(ssl_ct_child_init, NULL, NULL, APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(proxy_http_cleanup, ssl_ct_http_cleanup, NULL, NULL,
+    AP_OPTIONAL_HOOK(proxy_http_cleanup, ssl_ct_proxy_http_cleanup, NULL, NULL,
                      APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
                      APR_HOOK_MIDDLE);
