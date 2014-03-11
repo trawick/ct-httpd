@@ -23,8 +23,6 @@
  *   . ??
  *
  * + Known low-level code kludges/problems
- *   . no way to log CT-awareness of backend server (put it in configurable response
- *     header to allow logging or easy testing from client)
  *   . shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
