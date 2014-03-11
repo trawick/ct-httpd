@@ -19,22 +19,12 @@
  *
  * + Proxy: We should verify the signature of received SCTs on-line.
  *
- * + Configuration kludges
- *   . ??
- *
  * + Known low-level code kludges/problems
  *   . shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
  *   . recover from errors writing server data to audit file
  *   . no checking of max timestamp in SCT
- *
- * + Everything else
- *   . ??
- *
- * + Stuff to remember, or note elsewhere:
- *   .
- *
  */
 
 #if !defined(WIN32)
@@ -78,6 +68,10 @@
 #include "openssl/x509v3.h"
 #include "openssl/ocsp.h"
 
+#if OPENSSL_VERSION_NUMBER < 0x10002001L
+#error "mod_ssl_ct requires OpenSSL 1.0.2-beta1 or later"
+#endif
+
 #ifdef WIN32
 #define DOTEXE ".exe"
 #else
@@ -92,9 +86,6 @@
 
 #define DAEMON_NAME         "SCT maintenance daemon"
 #define SERVICE_THREAD_NAME "service thread"
-
-/** A certificate file larger than this is suspect */
-#define MAX_CERT_FILE_SIZE 30000 /* eventually this can include intermediate certs */
 
 /** Limit on size of stored SCTs for a certificate (individual SCTs as well
  * as size of all.
@@ -171,24 +162,7 @@ static apr_thread_t *service_thread;
 static apr_hash_t *cached_server_data;
 
 /* from c-t/src/log/ct_extensions.cc */
-static int NID_ctSignedCertificateTimestampList;
 static int NID_ctEmbeddedSignedCertificateTimestampList;
-static X509V3_EXT_METHOD ct_sctlist_method = {
-    0,  /* ext_nid, NID, will be created by OBJ_create() */
-    0,  /* flags */
-    ASN1_ITEM_ref(ASN1_OCTET_STRING), /* the object is an octet string */
-    0, 0, 0, 0,  /* ignored since the field above is set */
-    /* Create from, and print to, a hex string
-     * Allows to specify the extension configuration like so:
-     * ctSCT = <hexstring_value>
-     * (Unused - we just plumb the bytes in the fake cert directly.)
-     */
-    (X509V3_EXT_I2S)i2s_ASN1_OCTET_STRING,
-    (X509V3_EXT_S2I)s2i_ASN1_OCTET_STRING,
-    0, 0,
-    0, 0,
-    NULL   /* usr_data */
-};
 
 static X509V3_EXT_METHOD ct_embeddedsctlist_method = {
     0,  /* ext_nid, NID, will be created by OBJ_create() */
@@ -2131,18 +2105,10 @@ static int ssl_ct_post_read_request(request_rec *r)
 /* from LoadCtExtensions() in c-t/src/log/ct_extensions.cc */
 static apr_status_t build_extensions(void)
 {
-    /* NID_ctSignedCertificateTimestampList */
-    ct_sctlist_method.ext_nid = OBJ_create(kEmbeddedSCTListOID,
-                                           kEmbeddedSCTListSN,
-                                           kEmbeddedSCTListLN);
-    ap_assert(ct_sctlist_method.ext_nid != 0);
-    ap_assert(1 == X509V3_EXT_add(&ct_sctlist_method));
-    NID_ctSignedCertificateTimestampList = ct_sctlist_method.ext_nid;
-
     /* NID_ctEmbeddedSignedCertificateTimestampList; */
     ct_embeddedsctlist_method.ext_nid = OBJ_create(kEmbeddedSCTListOID,
-                                                 kEmbeddedSCTListSN,
-                                                 kEmbeddedSCTListLN);
+                                                   kEmbeddedSCTListSN,
+                                                   kEmbeddedSCTListLN);
     ap_assert(ct_embeddedsctlist_method.ext_nid != 0);
     ap_assert(1 == X509V3_EXT_add(&ct_embeddedsctlist_method));
     NID_ctEmbeddedSignedCertificateTimestampList =
