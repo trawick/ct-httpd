@@ -27,9 +27,6 @@
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
  *   . recover from errors writing server data to audit file
- *   . checking for SCT list in stapled OCSP response relies on looking at
- *     the string representation of the ASN.1 object (slow, probably isn't
- *     stable)
  *   . no checking of max timestamp in SCT
  *
  * + Everything else
@@ -1656,7 +1653,7 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     ct_conn_config *conncfg = get_conn_config(c);
     const unsigned char *p;
-    int i, j, len;
+    int i, len;
     OCSP_RESPONSE *rsp;
     OCSP_BASICRESP *br;
     OCSP_RESPDATA *rd;
@@ -1688,55 +1685,43 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
     rd = br->tbsResponseData;
 
     for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
+        X509_EXTENSION *ext;
+        int idx;
+        ASN1_OCTET_STRING *oct;
+
         single = sk_OCSP_SINGLERESP_value(rd->responses, i);
         if (!single) {
             continue;
         }
 
-        exts = single->singleExtensions;
-        for (j = 0; j < sk_X509_EXTENSION_num(exts); j++) {
-            ASN1_OBJECT *obj;
-            X509_EXTENSION *ext;
-            int asn1_size;
-            char buf[80];
-            ASN1_OCTET_STRING *oct;
+        idx = OCSP_SINGLERESP_get_ext_by_NID(single,
+                                             NID_ct_cert_scts, -1);
 
-            ext = sk_X509_EXTENSION_value(exts, j);
-            obj = X509_EXTENSION_get_object(ext);
-            oct = X509_EXTENSION_get_data(ext);
-
-            /* XXX don't mess with the char representation, even if it means
-             *     that we have to define the nid!
-             */
-            asn1_size = i2t_ASN1_OBJECT(buf, sizeof buf, obj);
-            if (asn1_size >= sizeof buf) {
-                /* can't be our extension */
-                continue;
-            }
-
-            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                          "ASN.1 object: %s", buf);
-
-            if (strcmp(buf, "1.3.6.1.4.1.11129.2.4.5")
-                && strcmp(buf, "CT Certificate SCTs")) { /* 1.0.2-beta1 has a long name */
-                /* not SignedCertificateTimestampList extension */
-                continue;
-            }
-
-            /* X509V3_EXT_print(_, ext, _, _); */
-
-            /* we need to get to the ASN1_OCTET_STRING * to get
-             * the data and len.
-             */
-
-            /* i2r_scts(method, ext_str, _, _); */
-
-            conncfg->ocsp_has_sct_list = 1;
-            conncfg->peer_ct_aware = 1;
-            conncfg->ocsp_sct_list_size = oct->length - 2;
-            conncfg->ocsp_sct_list = apr_pmemdup(c->pool, oct->data + 2,
-                                                 conncfg->ocsp_sct_list_size);
+        if (idx == -1) {
+            continue;
         }
+
+        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                      "index of NID_ct_cert_scts: %d", idx);
+
+        exts = single->singleExtensions;
+
+        ext = sk_X509_EXTENSION_value(exts, idx);
+        oct = X509_EXTENSION_get_data(ext);
+
+        /* X509V3_EXT_print(_, ext, _, _); */
+
+        /* we need to get to the ASN1_OCTET_STRING * to get
+         * the data and len.
+         */
+
+        /* i2r_scts(method, ext_str, _, _); */
+
+        conncfg->ocsp_has_sct_list = 1;
+        conncfg->peer_ct_aware = 1;
+        conncfg->ocsp_sct_list_size = oct->length - 2;
+        conncfg->ocsp_sct_list = apr_pmemdup(c->pool, oct->data + 2,
+                                             conncfg->ocsp_sct_list_size);
     }
 
     OCSP_RESPONSE_free(rsp);
