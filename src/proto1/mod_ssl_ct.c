@@ -23,7 +23,6 @@
  *   . shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
- *   . recover from errors writing server data to audit file
  */
 
 #if !defined(WIN32)
@@ -1531,7 +1530,9 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
 static void save_server_data(conn_rec *c, cert_chain *cc,
                              ct_conn_config *conncfg)
 {
-    if (audit_file) { /* child init successful */
+    if (audit_file_mutex && audit_file) { /* child init successful, no
+                                           * subsequent error
+                                           */
         apr_size_t bytes_written;
         apr_status_t rv;
         int i;
@@ -1539,53 +1540,77 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
         X509 **x509elts;
         server_rec *s = c->base_server;
 
+        /* Any error in this function is a file I/O error;
+         * if such an error occurs, the audit file will be closed
+         * and removed, and this child won't be able to queue
+         * anything for audit.  (It is likely that other child
+         * processes will have the same problem.)
+         */
+
         ctutil_thread_mutex_lock(audit_file_mutex);
 
-        /* New data from server */
+        if (audit_file) { /* no error just occurred... */
+            audit_file_nonempty = 1;
 
-        audit_file_nonempty = 1;
-        rv = ctutil_file_write_uint16(s, audit_file,
-                                      SERVER_START);
-        ap_assert(rv == APR_SUCCESS);
+            rv = ctutil_file_write_uint16(s, audit_file,
+                                          SERVER_START);
 
-        /* Write each certificate, starting with leaf */
-        x509elts = (X509 **)cc->cert_arr->elts;
-        for (i = 0; i < cc->cert_arr->nelts; i++) {
-            unsigned char *der_buf = NULL;
-            int der_length;
+            /* Write each certificate, starting with leaf */
+            x509elts = (X509 **)cc->cert_arr->elts;
+            for (i = 0; rv == APR_SUCCESS && i < cc->cert_arr->nelts; i++) {
+                unsigned char *der_buf = NULL;
+                int der_length;
 
-            rv = ctutil_file_write_uint16(s, audit_file, CERT_START);
-            ap_assert(rv == APR_SUCCESS);
+                rv = ctutil_file_write_uint16(s, audit_file, CERT_START);
 
-            /* now write the cert!!! */
+                /* now write the cert!!! */
 
-            der_length = i2d_X509(x509elts[i], &der_buf);
-            ap_assert(der_length > 0);
+                if (rv == APR_SUCCESS) {
+                    der_length = i2d_X509(x509elts[i], &der_buf);
+                    ap_assert(der_length > 0);
 
-            rv = ctutil_file_write_uint16(s, audit_file, der_length);
-            ap_assert(rv == APR_SUCCESS);
-            rv = apr_file_write_full(audit_file, der_buf, der_length,
-                                     &bytes_written);
-            ap_assert(rv == APR_SUCCESS);
+                    rv = ctutil_file_write_uint16(s, audit_file, der_length);
+                }
 
-            OPENSSL_free(der_buf);
-        }
+                if (rv == APR_SUCCESS) {
+                    rv = apr_file_write_full(audit_file, der_buf, der_length,
+                                             &bytes_written);
+                }
 
-        /* Write each SCT */
-        sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
-        for (i = 0; i < conncfg->all_scts->nelts; i++) {
-            ct_sct_data sct;
+                OPENSSL_free(der_buf);
+            }
 
-            rv = ctutil_file_write_uint16(s, audit_file, SCT_START);
-            ap_assert(rv == APR_SUCCESS);
+            /* Write each SCT */
+            sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
+            for (i = 0; rv == APR_SUCCESS && i < conncfg->all_scts->nelts; i++) {
+                ct_sct_data sct;
 
-            /* now write the SCT!!! */
-            sct = sct_elts[i];
-            rv = ctutil_file_write_uint16(s, audit_file, sct.len);
-            ap_assert(rv == APR_SUCCESS);
-            rv = apr_file_write_full(audit_file, sct.data, sct.len,
-                                     &bytes_written);
-            ap_assert(rv == APR_SUCCESS);
+                rv = ctutil_file_write_uint16(s, audit_file, SCT_START);
+
+                /* now write the SCT!!! */
+                sct = sct_elts[i];
+
+                if (rv == APR_SUCCESS) {
+                    rv = ctutil_file_write_uint16(s, audit_file, sct.len);
+                }
+
+                if (rv == APR_SUCCESS) {
+                    rv = apr_file_write_full(audit_file, sct.data, sct.len,
+                                             &bytes_written);
+                }
+            }
+
+            if (rv != APR_SUCCESS) {
+                /* an I/O error occurred; file is not usable */
+                ap_log_error(APLOG_MARK, APLOG_CRIT, rv, ap_server_conf,
+                             "Failed to write to %s, disabling audit for this "
+                             "child", audit_fn_active);
+                apr_file_close(audit_file);
+                audit_file = NULL;
+                apr_file_remove(audit_fn_active,
+                                /* not used in current implementations */
+                                c->pool);
+            }
         }
 
         ctutil_thread_mutex_unlock(audit_file_mutex);
@@ -2094,6 +2119,10 @@ static apr_status_t inactivate_audit_file(void *data)
 {
     apr_status_t rv;
     server_rec *s = data;
+
+    if (!audit_file) { /* something bad happened after child init */
+        return APR_SUCCESS;
+    }
 
     /* the normal cleanup was disabled in the call to apr_file_open */
     rv = apr_file_close(audit_file);
