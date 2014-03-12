@@ -18,6 +18,9 @@
  * Issues
  *
  * + Proxy: We should verify the signature of received SCTs on-line.
+ *   . need to set which part of the SCT is signed
+ *   . need to configure log id with public key so that we don't have
+ *     to try all of the configured keys
  *
  * + Known low-level code kludges/problems
  *   . shouldn't have to read file of server SCTs on every handshake
@@ -95,6 +98,7 @@
 typedef struct ct_server_config {
     apr_array_header_t *log_urls;
     apr_array_header_t *log_url_strs;
+    apr_array_header_t *log_public_keys;
     apr_array_header_t *cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
@@ -246,6 +250,32 @@ static apr_status_t verify_signature(sct_fields_t *sctf,
     EVP_MD_CTX_cleanup(&ctx);
 
     return rc == 1 ? APR_SUCCESS : APR_EINVAL;
+}
+
+/* For now try verify the signature using ANY of the configured public
+ * keys :)  We'll later allow configuration of the id of the log too
+ * so that we know which public key to use.
+ */
+static apr_status_t try_verify_signature(conn_rec *c, sct_fields_t *sctf,
+                                         apr_array_header_t *log_public_keys)
+{
+    apr_status_t rv = APR_EINVAL;
+    int i;
+    EVP_PKEY **elts;
+
+    elts = (EVP_PKEY **)log_public_keys->elts;
+    for (i = 0; i < log_public_keys->nelts; i++) {
+        EVP_PKEY *pubkey = elts[i];
+
+        rv = verify_signature(sctf, pubkey);
+        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                      "verify_signature -> %d", rv);
+        if (rv == APR_SUCCESS) {
+            break;
+        }
+    }
+
+    return rv;
 }
 
 static apr_status_t parse_sct(const char *source,
@@ -1407,7 +1437,8 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
  * errors should result in fatal alert
  */
 static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
-                                         cert_chain *cc, ct_conn_config *conncfg)
+                                         cert_chain *cc, ct_conn_config *conncfg,
+                                         ct_server_config *sconf)
 {
     apr_status_t rv = APR_SUCCESS;
 
@@ -1477,7 +1508,6 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             ct_sct_data *sct_elts;
             ct_sct_data sct;
             sct_fields_t fields;
-            EVP_PKEY *pkey = NULL;
 
             ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                           "%d SCTs received total", conncfg->all_scts->nelts);
@@ -1498,19 +1528,24 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                         rv = APR_EINVAL;
                     }
 
-                    /* XXX Let the admin configure public key(s) for some
-                     *     log(s) to allow us to check the signature when
-                     *     we see the SCT for the first time.
-                     */
-                    if (pkey) { /* Try to find key via log id. */
-                        rv = verify_signature(&fields, pkey);
+                    if (sconf->log_public_keys) {
+                        rv = try_verify_signature(c, &fields,
+                                                  sconf->log_public_keys);
                         if (rv != APR_SUCCESS) {
                             ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                                           "Server sent SCT with invalid signature");
                             rv = APR_EINVAL;
+
+                            /* XXX FIXME when verify signature works! */
+                            rv = APR_SUCCESS;
                         }
                     }
-                }                
+                    else {
+                        ap_log_cerror(APLOG_MARK, APLOG_WARNING, 0, c,
+                                      "Signature of SCT from server could not be "
+                                      "verified (no configured log public keys)");
+                    }
+                }
             }
         }
     }
@@ -1873,8 +1908,7 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
                 (ct_cached_server_data *)calloc(1, sizeof(ct_cached_server_data));
 
             new_server_data->validation_result = 
-                rv = validate_server_data(p, c, conncfg->certs, conncfg);
-
+                rv = validate_server_data(p, c, conncfg->certs, conncfg, sconf);
 
             if (rv != APR_SUCCESS) {
                 validation_error = 1;
@@ -2260,6 +2294,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
         ? virt->log_urls
         : base->log_urls;
 
+    conf->log_public_keys = base->log_public_keys;
     conf->sct_storage = base->sct_storage;
     conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
@@ -2376,6 +2411,43 @@ static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config
     return rv;
 }
 
+static apr_status_t save_log_public_key(apr_pool_t *p, const char *lpk,
+                                        ct_server_config *sconf)
+{
+    apr_status_t rv = APR_SUCCESS;
+    EVP_PKEY *pubkey, **ppkey;
+    FILE *pubkeyf;
+
+    pubkeyf = fopen(lpk, "r");
+    if (!pubkeyf) {
+        rv = errno; /* Unix-ism! */
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
+                     "could not open log public key file %s",
+                     lpk);
+        return rv;
+    }
+
+    pubkey = PEM_read_PUBKEY(pubkeyf, NULL, NULL, NULL);
+    if (!pubkey) {
+        fclose(pubkeyf);
+        rv = APR_EINVAL;
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                     "PEM_read_PUBKEY() failed to process public key file %s",
+                     lpk);
+        return rv;
+    }
+
+    fclose(pubkeyf);
+
+    if (!sconf->log_public_keys) {
+        sconf->log_public_keys = apr_array_make(p, 2, sizeof(EVP_PKEY *));
+    }
+    ppkey = (EVP_PKEY **)apr_array_push(sconf->log_public_keys);
+    *ppkey = pubkey;
+
+    return rv;
+}
+
 static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[])
 {
     int i;
@@ -2396,6 +2468,35 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
         rv = save_log_url(cmd->pool, argv[i], sconf);
         if (rv) {
             return apr_psprintf(cmd->pool, "CTLogs: Error with log URL %s: (%d)%pm",
+                                argv[i], rv, &rv);
+        }
+    }
+
+    return NULL;
+}
+
+static const char *ct_log_pubkeys(cmd_parms *cmd, void *x, int argc,
+                                  char *const argv[])
+{
+    int i;
+    apr_status_t rv;
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    if (argc < 1) {
+        return "CTLogPublicKeys: At least one public key must be provided";
+    }
+
+    for (i = 0; i < argc; i++) {
+        rv = save_log_public_key(cmd->pool, argv[i], sconf);
+        if (rv) {
+            return apr_psprintf(cmd->pool, "CTLogPublicKeys: Error with log URL "
+                                "%s: (%d)%pm",
                                 argv[i], rv, &rv);
         }
     }
@@ -2531,6 +2632,8 @@ static const command_rec ct_cmds[] =
                   "Location to store files of audit data"),
     AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
                       "List of Certificate Transparency Log URLs"),
+    AP_INIT_TAKE_ARGV("CTLogPublicKeys", ct_log_pubkeys, NULL, RSRC_CONF,
+                      "List of Certificate Transparency Log public keys"),
     AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
                   "Location to store SCTs obtained from logs"),
     AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
