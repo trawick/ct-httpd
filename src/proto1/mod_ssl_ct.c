@@ -2190,7 +2190,9 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
             audit_file = NULL;
         }
 
-        apr_pool_cleanup_register(p, s, inactivate_audit_file, apr_pool_cleanup_null);
+        if (audit_file) {
+            apr_pool_cleanup_register(p, s, inactivate_audit_file, apr_pool_cleanup_null);
+        }
     } /* !PROXY_OBLIVIOUS */
 }
 
