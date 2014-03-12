@@ -160,6 +160,7 @@ static apr_hash_t *cached_server_data;
 
 static const char *audit_fn_perm, *audit_fn_active;
 static apr_file_t *audit_file;
+static int audit_file_nonempty;
 static apr_thread_mutex_t *audit_file_mutex;
 static apr_thread_mutex_t *cached_server_data_mutex;
 
@@ -1541,6 +1542,8 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
         ctutil_thread_mutex_lock(audit_file_mutex);
 
         /* New data from server */
+
+        audit_file_nonempty = 1;
         rv = ctutil_file_write_uint16(s, audit_file,
                                       SERVER_START);
         ap_assert(rv == APR_SUCCESS);
@@ -2094,10 +2097,19 @@ static apr_status_t inactivate_audit_file(void *data)
 
     /* the normal cleanup was disabled in the call to apr_file_open */
     rv = apr_file_close(audit_file);
+    audit_file = NULL;
     if (rv == APR_SUCCESS) {
-        rv = apr_file_rename(audit_fn_active, audit_fn_perm,
-                             /* not used in current implementations */
-                             s->process->pool);
+        if (audit_file_nonempty) {
+            rv = apr_file_rename(audit_fn_active, audit_fn_perm,
+                                 /* not used in current implementations */
+                                 s->process->pool);
+        }
+        else {
+            /* No data written; just remove the file */
+            apr_file_remove(audit_fn_active,
+                            /* not used in current implementations */
+                            s->process->pool);
+        }
     }
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
