@@ -191,7 +191,7 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
     const EVP_MD *digest;
     unsigned char md[EVP_MAX_MD_SIZE];
     unsigned int n;
-    digest = EVP_get_digestbyname("sha1");
+    digest = EVP_get_digestbyname("sha256");
     X509_digest(x, digest, md, &n);
 
     return apr_pescape_hex(p, md, n, 0);
