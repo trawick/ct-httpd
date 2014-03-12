@@ -24,7 +24,6 @@
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
  *   . recover from errors writing server data to audit file
- *   . no checking of max timestamp in SCT
  */
 
 #if !defined(WIN32)
