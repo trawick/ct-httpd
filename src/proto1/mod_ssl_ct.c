@@ -49,8 +49,6 @@
 #include "apr_signal.h"
 #include "apr_strings.h"
 
-#include "apr_sha1.h"
-
 #include "httpd.h"
 #include "http_config.h"
 #include "http_core.h"
@@ -1338,26 +1336,26 @@ static const char *gen_key(conn_rec *c, cert_chain *cc,
                            ct_conn_config *conncfg)
 {
     const char *fp;
-    apr_sha1_ctx_t sha1ctx;
-    unsigned char digest[APR_SHA1_DIGESTSIZE];
+    SHA256_CTX sha256ctx;
+    unsigned char digest[SHA256_DIGEST_LENGTH];
 
     fp = get_cert_fingerprint(c->pool, cc->leaf);
 
-    apr_sha1_init(&sha1ctx);
-    apr_sha1_update_binary(&sha1ctx, (unsigned char *)fp, strlen(fp));
+    SHA256_Init(&sha256ctx);
+    SHA256_Update(&sha256ctx, (unsigned char *)fp, strlen(fp));
     if (conncfg->cert_sct_list) {
-        apr_sha1_update_binary(&sha1ctx, conncfg->cert_sct_list, 
-                               conncfg->cert_sct_list_size);
+        SHA256_Update(&sha256ctx, conncfg->cert_sct_list, 
+                      conncfg->cert_sct_list_size);
     }
     if (conncfg->serverhello_sct_list) {
-        apr_sha1_update_binary(&sha1ctx, conncfg->serverhello_sct_list,
-                               conncfg->serverhello_sct_list_size);
+        SHA256_Update(&sha256ctx, conncfg->serverhello_sct_list,
+                      conncfg->serverhello_sct_list_size);
     }
     if (conncfg->ocsp_sct_list) {
-        apr_sha1_update_binary(&sha1ctx, conncfg->ocsp_sct_list,
-                               conncfg->ocsp_sct_list_size);
+        SHA256_Update(&sha256ctx, conncfg->ocsp_sct_list,
+                      conncfg->ocsp_sct_list_size);
     }
-    apr_sha1_final(digest, &sha1ctx);
+    SHA256_Final(digest, &sha256ctx);
     return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
 }
 
