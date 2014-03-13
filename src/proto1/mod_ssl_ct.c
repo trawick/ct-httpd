@@ -282,7 +282,8 @@ static apr_status_t try_verify_signature(conn_rec *c, sct_fields_t *sctf,
 
 static apr_status_t parse_sct(const char *source,
                               server_rec *s, const unsigned char *sct,
-                              apr_size_t len, sct_fields_t *fields)
+                              apr_size_t len, cert_chain *cc,
+                              sct_fields_t *fields)
 {
     const unsigned char *cur;
     apr_size_t orig_len = len;
@@ -370,12 +371,19 @@ static apr_status_t parse_sct(const char *source,
     cur += fields->siglen;
     len -= fields->siglen;
 
-    /* XXX Which part is signed? */
     fields->signed_data = NULL;
     fields->signed_data_len = 0;
-    /* See certificate-transparency/src/proto/serializer.cc,
-     * method Serializer::SerializeV1CertSCTSignatureInput()
-     */
+
+    if (cc) {
+        /* If we have the server certificate, we can construct the
+         * data over which the signature is computed.
+         */
+
+        /* XXX Which part is signed? */
+        /* See certificate-transparency/src/proto/serializer.cc,
+         * method Serializer::SerializeV1CertSCTSignatureInput()
+         */
+    }
 
     /* could still be extensions within the signed part of the SCT */
 
@@ -498,7 +506,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         }
 
         rv = parse_sct(cur_sct_file,
-                       s, (const unsigned char *)scts, scts_size, &fields);
+                       s, (const unsigned char *)scts, scts_size, NULL, &fields);
         if (rv != APR_SUCCESS) {
             break;
         }
@@ -1520,8 +1528,9 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
             for (i = 0; i < conncfg->all_scts->nelts; i++) {
                 sct = sct_elts[i];
-                tmprv = parse_sct("backend server",
-                                  c->base_server, sct.data, sct.len, &fields);
+                tmprv = parse_sct("backend server", c->base_server, 
+                                  sct.data, sct.len, cc,
+                                  &fields);
                 if (tmprv != APR_SUCCESS) {
                     rv = tmprv;
                 }
