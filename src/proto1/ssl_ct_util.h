@@ -66,4 +66,24 @@ apr_status_t ctutil_read_var_bytes(unsigned char **mem, apr_size_t *avail,
 apr_uint64_t ctutil_deserialize_uint64(const unsigned char *mem);
 apr_uint16_t ctutil_deserialize_uint16(const unsigned char *mem);
 
+apr_status_t ctutil_serialize_uint64(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint64_t val);
+
+apr_status_t ctutil_serialize_uint24(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint32_t val);
+
+apr_status_t ctutil_serialize_uint16(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint16_t val);
+
+apr_status_t ctutil_serialize_uint8(unsigned char **mem, apr_size_t *avail,
+                                    unsigned char val);
+
+apr_status_t ctutil_write_var16_bytes(unsigned char **mem, apr_size_t *avail,
+                                      const unsigned char *val,
+                                      apr_uint16_t len);
+
+apr_status_t ctutil_write_var24_bytes(unsigned char **mem, apr_size_t *avail,
+                                      const unsigned char *val,
+                                      apr_uint32_t len);
+
 #endif /* SSL_CT_UTIL_H */

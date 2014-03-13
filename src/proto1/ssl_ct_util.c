@@ -397,6 +397,120 @@ apr_uint16_t ctutil_deserialize_uint16(const unsigned char *mem)
     return val;
 }
 
+apr_status_t ctutil_serialize_uint64(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint64_t val)
+{
+    if (*avail < sizeof(apr_uint64_t)) {
+        return APR_EINVAL;
+    }
+
+    **mem = (val & 0xFF00000000000000) >> 56;
+    *mem += 1;
+    **mem = (val & 0x00FF000000000000) >> 48;
+    *mem += 1;
+    **mem = (val & 0x0000FF0000000000) >> 40;
+    *mem += 1;
+    **mem = (val & 0x000000FF00000000) >> 32;
+    *mem += 1;
+    **mem = (val & 0x00000000FF000000) >> 24;
+    *mem += 1;
+    **mem = (val & 0x0000000000FF0000) >> 16;
+    *mem += 1;
+    **mem = (val & 0x000000000000FF00) >> 8;
+    *mem += 1;
+    **mem = (val & 0x00000000000000FF) >> 0;
+    *mem += 1;
+    *avail -= sizeof(apr_uint64_t);
+    return APR_SUCCESS;
+}
+
+apr_status_t ctutil_serialize_uint24(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint32_t val)
+{
+    if (*avail < 3) {
+        return APR_EINVAL;
+    }
+
+    **mem = (val & 0x00FF0000) >> 16;
+    *mem += 1;
+    **mem = (val & 0x0000FF00) >> 8;
+    *mem += 1;
+    **mem = (val & 0x000000FF) >> 0;
+    *mem += 1;
+    *avail -= 3;
+    return APR_SUCCESS;
+}
+
+apr_status_t ctutil_serialize_uint16(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint16_t val)
+{
+    if (*avail < sizeof(apr_uint16_t)) {
+        return APR_EINVAL;
+    }
+
+    **mem = (val & 0xFF00) >> 8;
+    *mem += 1;
+    **mem = (val & 0x00FF);
+    *mem += 1;
+    *avail -= 2;
+    return APR_SUCCESS;
+}
+
+apr_status_t ctutil_write_var16_bytes(unsigned char **mem, apr_size_t *avail,
+                                      const unsigned char *val,
+                                      apr_uint16_t len)
+{
+    apr_status_t rv;
+
+    if (*avail < (sizeof(apr_uint16_t) + len)) {
+        return APR_EINVAL;
+    }
+
+    rv = ctutil_serialize_uint16(mem, avail, len);
+    if (rv != APR_SUCCESS) { /* should not occur */
+        return rv;
+    }
+
+    memcpy(*mem, val, len);
+    *mem += len;
+    *avail -= len;
+    return APR_SUCCESS;
+}
+
+apr_status_t ctutil_write_var24_bytes(unsigned char **mem, apr_size_t *avail,
+                                      const unsigned char *val,
+                                      apr_uint32_t len)
+{
+    apr_status_t rv;
+
+    if (*avail < (3 + len)) {
+        return APR_EINVAL;
+    }
+
+    rv = ctutil_serialize_uint24(mem, avail, len);
+    if (rv != APR_SUCCESS) { /* should not occur */
+        return rv;
+    }
+
+    memcpy(*mem, val, len);
+    *mem += len;
+    *avail -= len;
+    return APR_SUCCESS;
+}
+
+apr_status_t ctutil_serialize_uint8(unsigned char **mem, apr_size_t *avail,
+                                    unsigned char val)
+{
+    if (*avail < 1) {
+        return APR_EINVAL;
+    }
+
+    **mem = val;
+    *mem += 1;
+    *avail -= 1;
+    return APR_SUCCESS;
+}
+
 /* all this deserialization crap is of course from
  * c-t/src/proto/serializer.cc
  */
