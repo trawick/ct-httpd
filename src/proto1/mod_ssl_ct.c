@@ -217,9 +217,11 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(!ctutil_in_array(TESTURL1 "x", arr));
 }
 
+#define LOG_ID_SIZE 32
+
 typedef struct {
     unsigned char version;
-    unsigned char logid[32];
+    unsigned char logid[LOG_ID_SIZE];
     apr_uint64_t timestamp;
     apr_time_t time;
     char timestr[APR_RFC822_DATE_LEN];
@@ -287,7 +289,7 @@ static apr_status_t parse_sct(const char *source,
 
     memset(fields, 0, sizeof *fields);
 
-    if (len < 1 + 32 + 8) {
+    if (len < 1 + LOG_ID_SIZE + 8) {
         /* no room for header */
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
                      "SCT size %" APR_SIZE_T_FMT " is too small",
@@ -300,9 +302,9 @@ static apr_status_t parse_sct(const char *source,
     fields->version = *cur;
     cur++;
     len -= 1;
-    memcpy(fields->logid, cur, 32);
-    cur += 32;
-    len -= 32;
+    memcpy(fields->logid, cur, LOG_ID_SIZE);
+    cur += LOG_ID_SIZE;
+    len -= LOG_ID_SIZE;
     fields->timestamp = ctutil_deserialize_uint64(cur);
     cur += 8;
     len -= 8;
@@ -381,6 +383,9 @@ static apr_status_t parse_sct(const char *source,
                  "SCT from %s: version %d timestamp %s hash alg %d sig alg %d",
                  source, fields->version, fields->timestr,
                  fields->hash_alg, fields->sig_alg);
+    ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Log Id",
+                fields->logid, sizeof(fields->logid),
+                AP_LOG_DATA_SHOW_OFFSET);
     ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Signature",
                 fields->sig, fields->siglen,
                 AP_LOG_DATA_SHOW_OFFSET);
