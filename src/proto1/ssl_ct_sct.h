@@ -52,6 +52,8 @@ apr_status_t sct_parse(const char *source,
                        apr_size_t len, cert_chain *cc,
                        sct_fields_t *fields);
 
+void sct_release(sct_fields_t *sctf);
+
 apr_status_t sct_verify_signature(conn_rec *c, sct_fields_t *sctf,
                                   apr_array_header_t *log_public_keys,
                                   apr_array_header_t *log_ids);

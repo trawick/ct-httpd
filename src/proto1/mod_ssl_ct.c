@@ -301,6 +301,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         rv = sct_parse(cur_sct_file,
                        s, (const unsigned char *)scts, scts_size, NULL, &fields);
         if (rv != APR_SUCCESS) {
+            sct_release(&fields);
             break;
         }
 
@@ -308,8 +309,11 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
                          "SCT in file %s has timestamp in future (%s), skipping",
                          cur_sct_file, fields.timestr);
+            sct_release(&fields);
             continue;
         }
+
+        sct_release(&fields);
 
         overall_len += scts_size + 2; /* include size header */
 
@@ -1356,6 +1360,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                                       "verified (no configured log public keys)");
                     }
                 }
+                sct_release(&fields);
             }
             if (verification_failures && !verification_successes) {
                 /* If no SCTs are valid, don't communicate. */

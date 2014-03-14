@@ -171,9 +171,6 @@ apr_status_t sct_parse(const char *source,
     cur += fields->siglen;
     len -= fields->siglen;
 
-    fields->signed_data = NULL;
-    fields->signed_data_len = 0;
-
     if (cc) {
         /* If we have the server certificate, we can construct the
          * data over which the signature is computed.
@@ -247,7 +244,17 @@ apr_status_t sct_parse(const char *source,
                 AP_LOG_DATA_SHOW_OFFSET);
 #endif /* httpd has ap_log_*data() */
 
+    ap_assert(!(fields->signed_data && rv != APR_SUCCESS));
+
     return rv;
+}
+
+void sct_release(sct_fields_t *sctf)
+{
+    if (sctf->signed_data) {
+        free((void *)sctf->signed_data);
+        sctf->signed_data = NULL;
+    }
 }
 
 apr_status_t sct_verify_timestamp(conn_rec *c, sct_fields_t *sctf)
