@@ -135,7 +135,7 @@ typedef struct ct_conn_config {
 } ct_conn_config;
 
 typedef struct ct_sct_data {
-    void *data;
+    const void *data;
     apr_size_t len;
 } ct_sct_data;
 
@@ -1572,7 +1572,7 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
 {
     apr_size_t avail, len_of_data;
     apr_status_t rv;
-    unsigned char *mem, *start_of_data;
+    const unsigned char *mem, *start_of_data;
 
     mem = sct_list;
     avail = sct_list_size;

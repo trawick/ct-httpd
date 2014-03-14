@@ -522,13 +522,13 @@ static apr_status_t read_length_prefix(const unsigned char **mem, apr_size_t *av
 
 static apr_status_t read_fixed_bytes(const unsigned char **mem, apr_size_t *avail,
                                      apr_size_t len,
-                                     unsigned char **start)
+                                     const unsigned char **start)
 {
     if (*avail < len) {
         return APR_EINVAL;
     }
 
-    *start = (unsigned char *)*mem;
+    *start = *mem;
     *avail -= len;
     *mem += len;
 
@@ -536,7 +536,7 @@ static apr_status_t read_fixed_bytes(const unsigned char **mem, apr_size_t *avai
 }
 
 apr_status_t ctutil_read_var_bytes(const unsigned char **mem, apr_size_t *avail,
-                                   unsigned char **start, apr_size_t *len)
+                                   const unsigned char **start, apr_size_t *len)
 {
     apr_status_t rv;
 
