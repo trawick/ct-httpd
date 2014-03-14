@@ -17,6 +17,11 @@
 /*
  * Issues
  *
+ * + Major limitations
+ *   . need to allow on-line (possibly automated) configuration of trusted logs
+ *   . need to ensure that audit data is written in a way that audit can be
+ *     performed
+ *
  * + Known low-level code kludges/problems
  *   . shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
