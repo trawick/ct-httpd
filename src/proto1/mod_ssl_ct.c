@@ -257,7 +257,7 @@ static apr_status_t try_verify_signature(conn_rec *c, sct_fields_t *sctf,
         EVP_PKEY *pubkey = pubkey_elts[i];
         char *logid = logid_elts[i];
 
-        if (!memcmp(logid, sctf->logid, 32)) {
+        if (!memcmp(logid, sctf->logid, LOG_ID_SIZE)) {
             rv = verify_signature(sctf, pubkey);
             if (rv != APR_SUCCESS) {
                 ap_log_cerror(APLOG_MARK, 
@@ -2508,16 +2508,16 @@ static apr_status_t save_log_public_key(apr_pool_t *p, const char *const_lpk_arg
     logid = lpk_arg;
     *colon = '\0';
 
-    if (strlen(logid) != 64) {
+    if (strlen(logid) != 2 * LOG_ID_SIZE) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
                      "expected 64-character hex log id");
     }
 
-    logid_binary = apr_palloc(p, 32);
-    rv = apr_unescape_hex(logid_binary, logid, 64, 0, NULL);
+    logid_binary = apr_palloc(p, LOG_ID_SIZE);
+    rv = apr_unescape_hex(logid_binary, logid, 2 * LOG_ID_SIZE, 0, NULL);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
-                     "could not unencode log id %s",
+                     "could not unencode hex log id %s",
                      logid);
         return rv;
     }
