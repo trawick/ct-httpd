@@ -1147,21 +1147,15 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 #ifdef HAVE_SCT_DAEMON
     apr_proc_t *procnew = NULL;
     const char *userdata_key = "sct_daemon_init";
-    void *data;
 
     root_server = s_main;
     root_pool = pconf;
 
-    apr_pool_userdata_get(&data, userdata_key, s_main->process->pool);
-    if (!data) {
-        procnew = apr_pcalloc(s_main->process->pool, sizeof(*procnew));
+    procnew = ap_retained_data_get(userdata_key);
+    if (!procnew) {
+        procnew = ap_retained_data_create(userdata_key, sizeof(*procnew));
         procnew->pid = -1;
         procnew->err = procnew->in = procnew->out = NULL;
-        apr_pool_userdata_set((const void *)procnew, userdata_key,
-                              apr_pool_cleanup_null, s_main->process->pool);
-    }
-    else {
-        procnew = data;
     }
 #endif /* HAVE_SCT_DAEMON */
 
