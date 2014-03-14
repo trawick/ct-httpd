@@ -246,14 +246,19 @@ static apr_status_t try_verify_signature(conn_rec *c, sct_fields_t *sctf,
     apr_status_t rv = APR_EINVAL;
     int i;
     EVP_PKEY **elts;
+    int nelts = log_public_keys->nelts;
 
     elts = (EVP_PKEY **)log_public_keys->elts;
-    for (i = 0; i < log_public_keys->nelts; i++) {
+    for (i = 0; i < nelts; i++) {
         EVP_PKEY *pubkey = elts[i];
 
         rv = verify_signature(sctf, pubkey);
-        ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                      "verify_signature -> %d", rv);
+        ap_log_cerror(APLOG_MARK, 
+                      (rv == APR_SUCCESS || i + 1 < nelts) ? 
+                          APLOG_DEBUG : APLOG_ERR,
+                      0, c,
+                      "attempt %d of %d: verify_signature -> %d",
+                      i + 1, nelts, rv);
         if (rv == APR_SUCCESS) {
             break;
         }
@@ -357,7 +362,6 @@ static apr_status_t parse_sct(const char *source,
     fields->signed_data = NULL;
     fields->signed_data_len = 0;
 
-#if 0
     if (cc) {
         /* If we have the server certificate, we can construct the
          * data over which the signature is computed.
@@ -384,11 +388,21 @@ static apr_status_t parse_sct(const char *source,
             rv = ctutil_serialize_uint16(&mem, &avail, 0); /* X509_ENTRY */
         }
         if (rv == APR_SUCCESS) {
-#if 0
-            rv = ctutil_write_var24_bytes(&mem, &avail,
-                                          /* EXTRACT THE BYTES FROM cc->leaf */
-                                          );
-#endif
+            /* Get DER encoding of leaf certificate */
+            unsigned char *der_buf
+                /* get OpenSSL to allocate: */
+                = NULL;
+            int der_length;
+
+            der_length = i2d_X509(cc->leaf, &der_buf);
+            if (der_length < 0) {
+                rv = APR_EINVAL;
+            }
+            else {
+                rv = ctutil_write_var24_bytes(&mem, &avail,
+                                              der_buf, der_length);
+                OPENSSL_free(der_buf);
+            }
         }
         if (rv == APR_SUCCESS) {
             rv = ctutil_write_var16_bytes(&mem, &avail, fields->extensions,
@@ -404,9 +418,9 @@ static apr_status_t parse_sct(const char *source,
         else {
             fields->signed_data_len = orig_len - avail;
             fields->signed_data = orig_mem;
+            /* Force invalid signature error: orig_mem[0] = orig_mem[0] + 1; */
         }
     }
-#endif
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                  "SCT from %s: version %d timestamp %s hash alg %d sig alg %d",
@@ -419,7 +433,7 @@ static apr_status_t parse_sct(const char *source,
                 fields->sig, fields->siglen,
                 AP_LOG_DATA_SHOW_OFFSET);
 
-    return APR_SUCCESS;
+    return rv;
 }
 
 /* a server's SCT-related storage on disk:
