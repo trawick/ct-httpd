@@ -181,42 +181,60 @@ apr_status_t sct_parse(const char *source,
          * method Serializer::SerializeV1CertSCTSignatureInput()
          */
 
-        apr_size_t orig_len = 1000000;
-        apr_size_t avail = orig_len;
-        unsigned char *mem = malloc(avail);
-        unsigned char *orig_mem = mem;
+        apr_size_t orig_len;
+        apr_size_t avail;
+        int der_length;
+        unsigned char *mem;
+        unsigned char *orig_mem;
 
-        rv = ctutil_serialize_uint8(&mem, &avail, 0); /* version 1 */
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_serialize_uint8(&mem, &avail, 0); /* CERTIFICATE_TIMESTAMP */
+        der_length = i2d_X509(cc->leaf, NULL);
+        if (der_length < 0) {
+            rv = APR_EINVAL;
         }
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_serialize_uint64(&mem, &avail, fields->timestamp);
-        }
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_serialize_uint16(&mem, &avail, 0); /* X509_ENTRY */
-        }
-        if (rv == APR_SUCCESS) {
-            /* Get DER encoding of leaf certificate */
-            unsigned char *der_buf
-                /* get OpenSSL to allocate: */
-                = NULL;
-            int der_length;
 
-            der_length = i2d_X509(cc->leaf, &der_buf);
-            if (der_length < 0) {
-                rv = APR_EINVAL;
-            }
-            else {
-                rv = ctutil_write_var24_bytes(&mem, &avail,
-                                              der_buf, der_length);
-                OPENSSL_free(der_buf);
-            }
-        }
         if (rv == APR_SUCCESS) {
-            rv = ctutil_write_var16_bytes(&mem, &avail, fields->extensions,
-                                          fields->extlen);
-                                          
+            orig_len = 0
+                + 1 /* version 1 */
+                + 1 /* CERTIFICATE_TIMESTAMP */
+                + 8 /* timestamp */
+                + 2 /* X509_ENTRY */
+                + 3 + der_length /* 24-bit length + X509 */
+                + 2 + fields->extlen /* 16-bit length + extensions */
+                ;
+            avail = orig_len;
+            mem = malloc(avail);
+            orig_mem = mem;
+            
+            rv = ctutil_serialize_uint8(&mem, &avail, 0); /* version 1 */
+            if (rv == APR_SUCCESS) {
+                rv = ctutil_serialize_uint8(&mem, &avail, 0); /* CERTIFICATE_TIMESTAMP */
+            }
+            if (rv == APR_SUCCESS) {
+                rv = ctutil_serialize_uint64(&mem, &avail, fields->timestamp);
+            }
+            if (rv == APR_SUCCESS) {
+                rv = ctutil_serialize_uint16(&mem, &avail, 0); /* X509_ENTRY */
+            }
+            if (rv == APR_SUCCESS) {
+                /* Get DER encoding of leaf certificate */
+                unsigned char *der_buf
+                    /* get OpenSSL to allocate: */
+                    = NULL;
+
+                der_length = i2d_X509(cc->leaf, &der_buf);
+                if (der_length < 0) {
+                    rv = APR_EINVAL;
+                }
+                else {
+                    rv = ctutil_write_var24_bytes(&mem, &avail,
+                                                  der_buf, der_length);
+                    OPENSSL_free(der_buf);
+                }
+            }
+            if (rv == APR_SUCCESS) {
+                rv = ctutil_write_var16_bytes(&mem, &avail, fields->extensions,
+                                              fields->extlen);
+            }
         }
 
         if (rv != APR_SUCCESS) {
@@ -225,6 +243,12 @@ apr_status_t sct_parse(const char *source,
             free(orig_mem);
         }
         else {
+            if (avail != 0) {
+                ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
+                             "length miscalculation for signed data (%" APR_SIZE_T_FMT
+                             " vs. %" APR_SIZE_T_FMT ")",
+                             orig_len, avail);
+            }
             fields->signed_data_len = orig_len - avail;
             fields->signed_data = orig_mem;
             /* Force invalid signature error: orig_mem[0] = orig_mem[0] + 1; */
