@@ -397,63 +397,53 @@ apr_uint16_t ctutil_deserialize_uint16(const unsigned char *mem)
     return val;
 }
 
-apr_status_t ctutil_serialize_uint64(unsigned char **mem, apr_size_t *avail,
-                                     apr_uint64_t val)
+static apr_status_t serialize_uint(unsigned char **mem, apr_size_t *avail,
+                                   apr_byte_t num_bits, apr_uint64_t val)
 {
-    if (*avail < sizeof(apr_uint64_t)) {
+    apr_byte_t num_bytes = num_bits / 8;
+    int i;
+    apr_uint64_t mask;
+    apr_byte_t shift;
+
+    if (*avail < num_bytes || num_bits > 64) {
         return APR_EINVAL;
     }
 
-    **mem = (val & 0xFF00000000000000) >> 56;
-    *mem += 1;
-    **mem = (val & 0x00FF000000000000) >> 48;
-    *mem += 1;
-    **mem = (val & 0x0000FF0000000000) >> 40;
-    *mem += 1;
-    **mem = (val & 0x000000FF00000000) >> 32;
-    *mem += 1;
-    **mem = (val & 0x00000000FF000000) >> 24;
-    *mem += 1;
-    **mem = (val & 0x0000000000FF0000) >> 16;
-    *mem += 1;
-    **mem = (val & 0x000000000000FF00) >> 8;
-    *mem += 1;
-    **mem = (val & 0x00000000000000FF) >> 0;
-    *mem += 1;
-    *avail -= sizeof(apr_uint64_t);
+    mask = (apr_uint64_t)0xFF << (num_bits - 8);
+    shift = num_bits - 8;
+    for (i = 0; i < num_bytes; i++) {
+        **mem = (val & mask) >> shift;
+        *mem += 1;
+        *avail -= 1;
+        mask = mask >> 8;
+        shift -= 8;
+    }
+
     return APR_SUCCESS;
+}
+
+apr_status_t ctutil_serialize_uint64(unsigned char **mem, apr_size_t *avail,
+                                     apr_uint64_t val)
+{
+    return serialize_uint(mem, avail, 64, val);
 }
 
 apr_status_t ctutil_serialize_uint24(unsigned char **mem, apr_size_t *avail,
                                      apr_uint32_t val)
 {
-    if (*avail < 3) {
-        return APR_EINVAL;
-    }
-
-    **mem = (val & 0x00FF0000) >> 16;
-    *mem += 1;
-    **mem = (val & 0x0000FF00) >> 8;
-    *mem += 1;
-    **mem = (val & 0x000000FF) >> 0;
-    *mem += 1;
-    *avail -= 3;
-    return APR_SUCCESS;
+    return serialize_uint(mem, avail, 24, val);
 }
 
 apr_status_t ctutil_serialize_uint16(unsigned char **mem, apr_size_t *avail,
                                      apr_uint16_t val)
 {
-    if (*avail < sizeof(apr_uint16_t)) {
-        return APR_EINVAL;
-    }
+    return serialize_uint(mem, avail, 16, val);
+}
 
-    **mem = (val & 0xFF00) >> 8;
-    *mem += 1;
-    **mem = (val & 0x00FF);
-    *mem += 1;
-    *avail -= 2;
-    return APR_SUCCESS;
+apr_status_t ctutil_serialize_uint8(unsigned char **mem, apr_size_t *avail,
+                                    unsigned char val)
+{
+    return serialize_uint(mem, avail, 8, val);
 }
 
 apr_status_t ctutil_write_var16_bytes(unsigned char **mem, apr_size_t *avail,
@@ -495,19 +485,6 @@ apr_status_t ctutil_write_var24_bytes(unsigned char **mem, apr_size_t *avail,
     memcpy(*mem, val, len);
     *mem += len;
     *avail -= len;
-    return APR_SUCCESS;
-}
-
-apr_status_t ctutil_serialize_uint8(unsigned char **mem, apr_size_t *avail,
-                                    unsigned char val)
-{
-    if (*avail < 1) {
-        return APR_EINVAL;
-    }
-
-    **mem = val;
-    *mem += 1;
-    *avail -= 1;
     return APR_SUCCESS;
 }
 
