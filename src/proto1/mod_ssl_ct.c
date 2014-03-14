@@ -2273,14 +2273,20 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
                      "could not initialize " SSL_CT_MUTEX_TYPE
                      " mutex in child");
-        return;
+        /* might crash otherwise due to lack of checking for initialized data
+         * in all the right places, but this is going to skip pchild cleanup
+         */
+        exit(APEXIT_CHILDSICK);
     }
 
     rv = apr_thread_create(&service_thread, NULL, run_service_thread, s, p);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
                      "could not create " SERVICE_THREAD_NAME " in child");
-        return;
+        /* might crash otherwise due to lack of checking for initialized data
+         * in all the right places, but this is going to skip pchild cleanup
+         */
+        exit(APEXIT_CHILDSICK);
     }
 
     apr_pool_cleanup_register(p, service_thread, wait_for_service_thread,
@@ -2297,10 +2303,10 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
                          "could not allocate a thread mutex");
-            /* might crash due to lack of checking for initialized data in all
-             * the right places
+            /* might crash otherwise due to lack of checking for initialized data
+             * in all the right places, but this is going to skip pchild cleanup
              */
-            return;
+            exit(APEXIT_CHILDSICK);
         }
 
         audit_basename = apr_psprintf(p, "audit_%" APR_PID_T_FMT,
@@ -2308,9 +2314,10 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
         rv = ctutil_path_join((char **)&audit_fn_perm, sconf->audit_storage,
                               audit_basename, p, s);
         if (rv != APR_SUCCESS) {
-            audit_fn_perm = NULL;
-            audit_fn_active = NULL;
-            return;
+            /* might crash otherwise due to lack of checking for initialized data
+             * in all the right places, but this is going to skip pchild cleanup
+             */
+            exit(APEXIT_CHILDSICK);
         }
 
         audit_fn_active = apr_pstrcat(p, audit_fn_perm, ".tmp", NULL);
