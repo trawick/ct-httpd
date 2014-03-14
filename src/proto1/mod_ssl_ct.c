@@ -17,8 +17,7 @@
 /*
  * Issues
  *
- * + Proxy: We should verify the signature of received SCTs on-line.
- *   . need to set which part of the SCT is signed
+ * + Proxy:
  *   . need to configure log id with public key so that we don't have
  *     to try all of the configured keys
  *
