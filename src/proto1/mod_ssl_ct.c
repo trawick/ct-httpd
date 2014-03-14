@@ -209,8 +209,11 @@ static void run_internal_tests(apr_pool_t *p)
       " " TESTURL1 " \r\n" TESTURL2 "\n"
       TESTURL3 /* no "\n" */ ;
     unsigned char buf[8], *ch;
+    const unsigned char *const_ch;
     apr_size_t avail;
     apr_status_t rv;
+    apr_uint16_t val16;
+    apr_uint64_t val64;
 
     ctutil_buffer_to_array(p, filecontents, strlen(filecontents), &arr);
     
@@ -233,6 +236,14 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(buf[5] == 0xFE);
     ap_assert(buf[6] == 0xBA);
     ap_assert(buf[7] == 0xBE);
+
+    const_ch = buf;
+    avail = 8;
+    rv = ctutil_deserialize_uint64(&const_ch, &avail, &val64);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(const_ch == buf + 8);
+    ap_assert(val64 == 0xDEADBEEFCAFEBABE);
 
     ch = buf;
     avail = 7;
@@ -262,6 +273,13 @@ static void run_internal_tests(apr_pool_t *p)
     ap_assert(ch == buf + 2);
     ap_assert(buf[0] == 0xDE);
     ap_assert(buf[1] == 0xAD);
+
+    const_ch = buf;
+    avail = 2;
+    rv = ctutil_deserialize_uint16(&const_ch, &avail, &val16);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(val16 == 0xDEAD);
 
     ch = buf;
     avail = 1;
@@ -394,9 +412,7 @@ static apr_status_t parse_sct(const char *source,
 {
     const unsigned char *cur;
     apr_size_t orig_len = len;
-#if 0
     apr_status_t rv;
-#endif
 
     memset(fields, 0, sizeof *fields);
 
@@ -416,9 +432,8 @@ static apr_status_t parse_sct(const char *source,
     memcpy(fields->logid, cur, LOG_ID_SIZE);
     cur += LOG_ID_SIZE;
     len -= LOG_ID_SIZE;
-    fields->timestamp = ctutil_deserialize_uint64(cur);
-    cur += 8;
-    len -= 8;
+    rv = ctutil_deserialize_uint64(&cur, &len, &fields->timestamp);
+    ap_assert(rv == APR_SUCCESS);
 
     fields->time = apr_time_from_msec(fields->timestamp);
 
@@ -435,9 +450,8 @@ static apr_status_t parse_sct(const char *source,
         return APR_EINVAL;
     }
 
-    fields->extlen = ctutil_deserialize_uint16(cur);
-    cur += 2;
-    len -= 2;
+    rv = ctutil_deserialize_uint16(&cur, &len, &fields->extlen);
+    ap_assert(rv == APR_SUCCESS);
 
     if (fields->extlen != 0) {
         if (fields->extlen < len) {
@@ -470,9 +484,8 @@ static apr_status_t parse_sct(const char *source,
     fields->sig_alg = *cur;
     cur += 1;
     len -= 1;
-    fields->siglen = ctutil_deserialize_uint16(cur);
-    cur += 2;
-    len -= 2;
+    rv = ctutil_deserialize_uint16(&cur, &len, &fields->siglen);
+    ap_assert(rv == APR_SUCCESS);
 
     if (fields->siglen < len) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
@@ -1566,7 +1579,8 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
 
     /* Make sure the overall length is correct */
 
-    rv = ctutil_read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
+    rv = ctutil_read_var_bytes((const unsigned char **)&mem,
+                               &avail, &start_of_data, &len_of_data);
     if (rv != APR_SUCCESS) {
         return rv;
     }
@@ -1581,7 +1595,8 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
     avail = sct_list_size - sizeof(apr_uint16_t);
 
     while (rv == APR_SUCCESS && avail > 0) {
-        rv = ctutil_read_var_bytes(&mem, &avail, &start_of_data, &len_of_data);
+        rv = ctutil_read_var_bytes((const unsigned char **)&mem, &avail, 
+                                   &start_of_data, &len_of_data);
         if (rv == APR_SUCCESS) {
             ct_sct_data *sct = (ct_sct_data *)apr_array_push(conncfg->all_scts);
 

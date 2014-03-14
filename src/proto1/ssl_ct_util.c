@@ -371,30 +371,45 @@ void ctutil_log_array(const char *file, int line, int module_index,
     }
 }
 
-apr_uint64_t ctutil_deserialize_uint64(const unsigned char *mem)
+static apr_status_t deserialize_uint(const unsigned char **mem,
+                                     apr_size_t *avail,
+                                     apr_byte_t num_bits, apr_uint64_t *pval)
 {
+    apr_byte_t num_bytes = num_bits / 8;
     apr_uint64_t val = 0;
     int i;
 
-    for (i = 0; i < sizeof(val); i++) {
-        val = (val << 8) | *mem;
-        mem += 1;
+    if (*avail < num_bytes || num_bits > 64) {
+        return APR_EINVAL;
     }
 
-    return val;
+    for (i = 0; i < num_bytes; i++) {
+        val = (val << 8) | **mem;
+        *mem += 1;
+        *avail -= 1;
+    }
+
+    *pval = val;
+    return APR_SUCCESS;
 }
 
-apr_uint16_t ctutil_deserialize_uint16(const unsigned char *mem)
+apr_status_t ctutil_deserialize_uint64(const unsigned char **mem,
+                                       apr_size_t *avail,
+                                       apr_uint64_t *pval)
 {
-    apr_uint16_t val = 0;
-    int i;
+    return deserialize_uint(mem, avail, 64, pval);
+}
 
-    for (i = 0; i < sizeof(val); i++) {
-        val = (val << 8) | *mem;
-        mem += 1;
-    }
+apr_status_t ctutil_deserialize_uint16(const unsigned char **mem,
+                                       apr_size_t *avail,
+                                       apr_uint16_t *pval)
+{
+    apr_status_t rv;
+    apr_uint64_t val64;
 
-    return val;
+    rv = deserialize_uint(mem, avail, 16, &val64);
+    *pval = (apr_uint64_t)val64;
+    return rv;
 }
 
 static apr_status_t serialize_uint(unsigned char **mem, apr_size_t *avail,
@@ -491,32 +506,13 @@ apr_status_t ctutil_write_var24_bytes(unsigned char **mem, apr_size_t *avail,
 /* all this deserialization crap is of course from
  * c-t/src/proto/serializer.cc
  */
-static apr_status_t read_u16(unsigned char **mem, apr_size_t *avail, apr_uint16_t *val)
-{
-    int i;
-
-    if (*avail < 2) {
-        return APR_EINVAL;
-    }
-
-    *val = 0;
-
-    for (i = 0; i < sizeof(*val); i++) {
-        *val = (*val << 8) | **mem;
-        *mem += 1;
-        *avail -= 1;
-    }
-
-    return APR_SUCCESS;
-}
-
-static apr_status_t read_length_prefix(unsigned char **mem, apr_size_t *avail,
+static apr_status_t read_length_prefix(const unsigned char **mem, apr_size_t *avail,
                                        apr_size_t *result)
 {
     apr_status_t rv;
     apr_uint16_t val;
 
-    rv = read_u16(mem, avail, &val);
+    rv = ctutil_deserialize_uint16(mem, avail, &val);
     if (rv == APR_SUCCESS) {
         *result = val;
     }
@@ -524,7 +520,7 @@ static apr_status_t read_length_prefix(unsigned char **mem, apr_size_t *avail,
     return rv;
 }
 
-static apr_status_t read_fixed_bytes(unsigned char **mem, apr_size_t *avail,
+static apr_status_t read_fixed_bytes(const unsigned char **mem, apr_size_t *avail,
                                      apr_size_t len,
                                      unsigned char **start)
 {
@@ -532,14 +528,14 @@ static apr_status_t read_fixed_bytes(unsigned char **mem, apr_size_t *avail,
         return APR_EINVAL;
     }
 
-    *start = *mem;
+    *start = (unsigned char *)*mem;
     *avail -= len;
     *mem += len;
 
     return APR_SUCCESS;
 }
 
-apr_status_t ctutil_read_var_bytes(unsigned char **mem, apr_size_t *avail,
+apr_status_t ctutil_read_var_bytes(const unsigned char **mem, apr_size_t *avail,
                                    unsigned char **start, apr_size_t *len)
 {
     apr_status_t rv;
