@@ -63,6 +63,7 @@
 #include "mod_proxy.h"
 
 #include "ssl_ct_util.h"
+#include "ssl_ct_sct.h"
 
 #include "openssl/x509v3.h"
 #include "openssl/ocsp.h"
@@ -112,12 +113,6 @@ typedef struct ct_server_config {
 #define PROXY_REQUIRE          3
     int proxy_awareness;
 } ct_server_config;
-
-typedef struct cert_chain {
-    apr_pool_t *p;
-    apr_array_header_t *cert_arr; /* array of X509 * */
-    X509 *leaf;
-} cert_chain;
 
 typedef struct ct_conn_config {
     int peer_ct_aware;
@@ -197,254 +192,6 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
     X509_digest(x, digest, md, &n);
 
     return apr_pescape_hex(p, md, n, 0);
-}
-
-#define LOG_ID_SIZE 32
-
-typedef struct {
-    unsigned char version;
-    unsigned char logid[LOG_ID_SIZE];
-    apr_uint64_t timestamp;
-    apr_time_t time;
-    char timestr[APR_RFC822_DATE_LEN];
-    const unsigned char *extensions;
-    apr_uint16_t extlen;
-    unsigned char hash_alg;
-    unsigned char sig_alg;
-    apr_uint16_t siglen;
-    const unsigned char *sig;
-    const unsigned char *signed_data;
-    apr_size_t signed_data_len;
-} sct_fields_t;
-
-static apr_status_t verify_signature(sct_fields_t *sctf,
-                                     EVP_PKEY *pkey)
-{
-    EVP_MD_CTX ctx;
-    int rc;
-
-    if (sctf->signed_data == NULL) {
-        return APR_EINVAL;
-    }
-
-    EVP_MD_CTX_init(&ctx);
-    ap_assert(1 == EVP_VerifyInit(&ctx, EVP_sha256()));
-    ap_assert(1 == EVP_VerifyUpdate(&ctx, sctf->signed_data,
-                                    sctf->signed_data_len));
-    rc = EVP_VerifyFinal(&ctx, sctf->sig, sctf->siglen, pkey);
-    EVP_MD_CTX_cleanup(&ctx);
-
-    return rc == 1 ? APR_SUCCESS : APR_EINVAL;
-}
-
-static apr_status_t try_verify_signature(conn_rec *c, sct_fields_t *sctf,
-                                         apr_array_header_t *log_public_keys,
-                                         apr_array_header_t *log_ids)
-{
-    apr_status_t rv = APR_EINVAL;
-    int i;
-    EVP_PKEY **pubkey_elts;
-    char **logid_elts;
-    int nelts = log_public_keys->nelts;
-
-    ap_assert(log_public_keys->nelts == log_ids->nelts);
-    ap_assert(sctf->signed_data != NULL);
-
-    pubkey_elts = (EVP_PKEY **)log_public_keys->elts;
-    logid_elts = (char **)log_ids->elts;
-
-    for (i = 0; i < nelts; i++) {
-        EVP_PKEY *pubkey = pubkey_elts[i];
-        char *logid = logid_elts[i];
-
-        if (!memcmp(logid, sctf->logid, LOG_ID_SIZE)) {
-            rv = verify_signature(sctf, pubkey);
-            if (rv != APR_SUCCESS) {
-                ap_log_cerror(APLOG_MARK, 
-                              APLOG_ERR,
-                              rv, c,
-                              "verify_signature failed");
-            }
-            else {
-                ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
-                              "verify_signature succeeded");
-            }
-            return rv;
-        }
-    }
-
-    return APR_NOTFOUND;
-}
-
-static apr_status_t parse_sct(const char *source,
-                              server_rec *s, const unsigned char *sct,
-                              apr_size_t len, cert_chain *cc,
-                              sct_fields_t *fields)
-{
-    const unsigned char *cur;
-    apr_size_t orig_len = len;
-    apr_status_t rv;
-
-    memset(fields, 0, sizeof *fields);
-
-    if (len < 1 + LOG_ID_SIZE + 8) {
-        /* no room for header */
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "SCT size %" APR_SIZE_T_FMT " is too small",
-                     len);
-        return APR_EINVAL;
-    }
-
-    cur = sct;
-
-    fields->version = *cur;
-    cur++;
-    len -= 1;
-    memcpy(fields->logid, cur, LOG_ID_SIZE);
-    cur += LOG_ID_SIZE;
-    len -= LOG_ID_SIZE;
-    rv = ctutil_deserialize_uint64(&cur, &len, &fields->timestamp);
-    ap_assert(rv == APR_SUCCESS);
-
-    fields->time = apr_time_from_msec(fields->timestamp);
-
-    /* XXX maybe do this only if log level is such that we'll
-     *     use it later?
-     */
-    apr_rfc822_date(fields->timestr, fields->time);
-
-
-    if (len < 2) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "SCT size %" APR_SIZE_T_FMT " has no space for extension "
-                     "len", orig_len);
-        return APR_EINVAL;
-    }
-
-    rv = ctutil_deserialize_uint16(&cur, &len, &fields->extlen);
-    ap_assert(rv == APR_SUCCESS);
-
-    if (fields->extlen != 0) {
-        if (fields->extlen < len) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                         "SCT size %" APR_SIZE_T_FMT " has no space for "
-                         "%hu bytes of extensions",
-                         orig_len, fields->extlen);
-            return APR_EINVAL;
-        }
-
-        fields->extensions = cur;
-        cur += fields->extlen;
-        len -= fields->extlen;
-    }
-    else {
-        fields->extensions = 0;
-    }
-
-    if (len < 4) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "SCT size %" APR_SIZE_T_FMT " has no space for "
-                     "hash algorithm, signature algorithm, and signature len",
-                     orig_len);
-        return APR_EINVAL;
-    }
-
-    fields->hash_alg = *cur;
-    cur += 1;
-    len -= 1;
-    fields->sig_alg = *cur;
-    cur += 1;
-    len -= 1;
-    rv = ctutil_deserialize_uint16(&cur, &len, &fields->siglen);
-    ap_assert(rv == APR_SUCCESS);
-
-    if (fields->siglen < len) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "SCT has no space for signature");
-        return APR_EINVAL;
-    }
-
-    fields->sig = cur;
-    cur += fields->siglen;
-    len -= fields->siglen;
-
-    fields->signed_data = NULL;
-    fields->signed_data_len = 0;
-
-    if (cc) {
-        /* If we have the server certificate, we can construct the
-         * data over which the signature is computed.
-         */
-
-        /* XXX Which part is signed? */
-        /* See certificate-transparency/src/proto/serializer.cc,
-         * method Serializer::SerializeV1CertSCTSignatureInput()
-         */
-
-        apr_size_t orig_len = 1000000;
-        apr_size_t avail = orig_len;
-        unsigned char *mem = malloc(avail);
-        unsigned char *orig_mem = mem;
-
-        rv = ctutil_serialize_uint8(&mem, &avail, 0); /* version 1 */
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_serialize_uint8(&mem, &avail, 0); /* CERTIFICATE_TIMESTAMP */
-        }
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_serialize_uint64(&mem, &avail, fields->timestamp);
-        }
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_serialize_uint16(&mem, &avail, 0); /* X509_ENTRY */
-        }
-        if (rv == APR_SUCCESS) {
-            /* Get DER encoding of leaf certificate */
-            unsigned char *der_buf
-                /* get OpenSSL to allocate: */
-                = NULL;
-            int der_length;
-
-            der_length = i2d_X509(cc->leaf, &der_buf);
-            if (der_length < 0) {
-                rv = APR_EINVAL;
-            }
-            else {
-                rv = ctutil_write_var24_bytes(&mem, &avail,
-                                              der_buf, der_length);
-                OPENSSL_free(der_buf);
-            }
-        }
-        if (rv == APR_SUCCESS) {
-            rv = ctutil_write_var16_bytes(&mem, &avail, fields->extensions,
-                                          fields->extlen);
-                                          
-        }
-
-        if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
-                         "Failed to reconstruct signed data for SCT");
-            free(orig_mem);
-        }
-        else {
-            fields->signed_data_len = orig_len - avail;
-            fields->signed_data = orig_mem;
-            /* Force invalid signature error: orig_mem[0] = orig_mem[0] + 1; */
-        }
-    }
-
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                 "SCT from %s: version %d timestamp %s hash alg %d sig alg %d",
-                 source, fields->version, fields->timestr,
-                 fields->hash_alg, fields->sig_alg);
-#if AP_MODULE_MAGIC_AT_LEAST(20130702,2)
-    ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Log Id",
-                fields->logid, sizeof(fields->logid),
-                AP_LOG_DATA_SHOW_OFFSET);
-    ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Signature",
-                fields->sig, fields->siglen,
-                AP_LOG_DATA_SHOW_OFFSET);
-#endif /* httpd has ap_log_*data() */
-
-    return rv;
 }
 
 /* a server's SCT-related storage on disk:
@@ -551,7 +298,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             break;
         }
 
-        rv = parse_sct(cur_sct_file,
+        rv = sct_parse(cur_sct_file,
                        s, (const unsigned char *)scts, scts_size, NULL, &fields);
         if (rv != APR_SUCCESS) {
             break;
@@ -1571,22 +1318,20 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
             for (i = 0; i < conncfg->all_scts->nelts; i++) {
                 sct = sct_elts[i];
-                tmprv = parse_sct("backend server", c->base_server, 
+                tmprv = sct_parse("backend server", c->base_server, 
                                   sct.data, sct.len, cc,
                                   &fields);
                 if (tmprv != APR_SUCCESS) {
                     rv = tmprv;
                 }
                 else {
-                    if (fields.time > apr_time_now()) {
-                        ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
-                                      "Server sent SCT not yet valid (timestamp %s)",
-                                      fields.timestr);
+                    tmprv = sct_verify_timestamp(c, &fields);
+                    if (tmprv != APR_SUCCESS) {
                         verification_failures++;
                     }
 
                     if (sconf->log_public_keys) {
-                        tmprv = try_verify_signature(c, &fields,
+                        tmprv = sct_verify_signature(c, &fields,
                                                      sconf->log_public_keys,
                                                      sconf->log_ids);
                         if (tmprv == APR_NOTFOUND) {
