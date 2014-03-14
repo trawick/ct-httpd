@@ -2365,10 +2365,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
     conf = (ct_server_config *)apr_pmemdup(p, virt, sizeof(ct_server_config));
 
-    conf->log_urls = (virt->log_urls != NULL)
-        ? virt->log_urls
-        : base->log_urls;
-
+    conf->log_urls = base->log_urls;
     conf->log_public_keys = base->log_public_keys;
     conf->log_ids = base->log_ids;
     conf->sct_storage = base->sct_storage;
