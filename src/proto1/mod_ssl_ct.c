@@ -17,10 +17,6 @@
 /*
  * Issues
  *
- * + Proxy:
- *   . need to configure log id with public key so that we don't have
- *     to try all of the configured keys
- *
  * + Known low-level code kludges/problems
  *   . shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
@@ -98,6 +94,7 @@ typedef struct ct_server_config {
     apr_array_header_t *log_urls;
     apr_array_header_t *log_url_strs;
     apr_array_header_t *log_public_keys;
+    apr_array_header_t *log_ids;
     apr_array_header_t *cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
@@ -235,35 +232,43 @@ static apr_status_t verify_signature(sct_fields_t *sctf,
     return rc == 1 ? APR_SUCCESS : APR_EINVAL;
 }
 
-/* For now try verify the signature using ANY of the configured public
- * keys :)  We'll later allow configuration of the id of the log too
- * so that we know which public key to use.
- */
 static apr_status_t try_verify_signature(conn_rec *c, sct_fields_t *sctf,
-                                         apr_array_header_t *log_public_keys)
+                                         apr_array_header_t *log_public_keys,
+                                         apr_array_header_t *log_ids)
 {
     apr_status_t rv = APR_EINVAL;
     int i;
-    EVP_PKEY **elts;
+    EVP_PKEY **pubkey_elts;
+    char **logid_elts;
     int nelts = log_public_keys->nelts;
 
-    elts = (EVP_PKEY **)log_public_keys->elts;
-    for (i = 0; i < nelts; i++) {
-        EVP_PKEY *pubkey = elts[i];
+    ap_assert(log_public_keys->nelts == log_ids->nelts);
+    ap_assert(sctf->signed_data != NULL);
 
-        rv = verify_signature(sctf, pubkey);
-        ap_log_cerror(APLOG_MARK, 
-                      (rv == APR_SUCCESS || i + 1 < nelts) ? 
-                          APLOG_DEBUG : APLOG_ERR,
-                      0, c,
-                      "attempt %d of %d: verify_signature -> %d",
-                      i + 1, nelts, rv);
-        if (rv == APR_SUCCESS) {
-            break;
+    pubkey_elts = (EVP_PKEY **)log_public_keys->elts;
+    logid_elts = (char **)log_ids->elts;
+
+    for (i = 0; i < nelts; i++) {
+        EVP_PKEY *pubkey = pubkey_elts[i];
+        char *logid = logid_elts[i];
+
+        if (!memcmp(logid, sctf->logid, 32)) {
+            rv = verify_signature(sctf, pubkey);
+            if (rv != APR_SUCCESS) {
+                ap_log_cerror(APLOG_MARK, 
+                              APLOG_ERR,
+                              rv, c,
+                              "verify_signature failed");
+            }
+            else {
+                ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                              "verify_signature succeeded");
+            }
+            return rv;
         }
     }
 
-    return rv;
+    return APR_NOTFOUND;
 }
 
 static apr_status_t parse_sct(const char *source,
@@ -1553,7 +1558,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
         }
         else {
             apr_status_t tmprv;
-            int i;
+            int i, verification_failures, verification_successes, unknown_log_ids;
             ct_sct_data *sct_elts;
             ct_sct_data sct;
             sct_fields_t fields;
@@ -1561,6 +1566,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
             ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                           "%d SCTs received total", conncfg->all_scts->nelts);
 
+            verification_failures = verification_successes = unknown_log_ids = 0;
             sct_elts = (ct_sct_data *)conncfg->all_scts->elts;
             for (i = 0; i < conncfg->all_scts->nelts; i++) {
                 sct = sct_elts[i];
@@ -1575,28 +1581,46 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                         ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                                       "Server sent SCT not yet valid (timestamp %s)",
                                       fields.timestr);
-                        rv = APR_EINVAL;
+                        verification_failures++;
                     }
 
                     if (sconf->log_public_keys) {
-                        rv = try_verify_signature(c, &fields,
-                                                  sconf->log_public_keys);
-                        if (rv != APR_SUCCESS) {
+                        tmprv = try_verify_signature(c, &fields,
+                                                     sconf->log_public_keys,
+                                                     sconf->log_ids);
+                        if (tmprv == APR_NOTFOUND) {
+                            ap_log_cerror(APLOG_MARK, APLOG_WARNING, 0, c,
+                                          "Server sent SCT from unrecognized log");
+                            unknown_log_ids++;
+                        }
+                        else if (tmprv != APR_SUCCESS) {
                             ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                                           "Server sent SCT with invalid signature");
-                            rv = APR_EINVAL;
-
-                            /* XXX FIXME when verify signature works! */
-                            rv = APR_SUCCESS;
+                            tmprv = APR_EINVAL;
+                            verification_failures++;
+                        }
+                        else {
+                            verification_successes++;
                         }
                     }
                     else {
+                        unknown_log_ids++;
                         ap_log_cerror(APLOG_MARK, APLOG_WARNING, 0, c,
                                       "Signature of SCT from server could not be "
                                       "verified (no configured log public keys)");
                     }
                 }
             }
+            if (verification_failures && !verification_successes) {
+                /* If no SCTs are valid, don't communicate. */
+                rv = APR_EINVAL;
+            }
+            ap_log_cerror(APLOG_MARK,
+                          rv != APR_SUCCESS ? APLOG_ERR : APLOG_INFO, 0, c,
+                          "Signature/timestamp validation for %d SCTs: %d successes, "
+                          "%d failures, %d from unknown logs",
+                          conncfg->all_scts->nelts, verification_successes,
+                          verification_failures, unknown_log_ids);
         }
     }
 
@@ -2345,6 +2369,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
         : base->log_urls;
 
     conf->log_public_keys = base->log_public_keys;
+    conf->log_ids = base->log_ids;
     conf->sct_storage = base->sct_storage;
     conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
@@ -2461,19 +2486,47 @@ static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config
     return rv;
 }
 
-static apr_status_t save_log_public_key(apr_pool_t *p, const char *lpk,
+static apr_status_t save_log_public_key(apr_pool_t *p, const char *const_lpk_arg,
                                         ct_server_config *sconf)
 {
     apr_status_t rv = APR_SUCCESS;
+    const char *logid, *pubkey_fname;
     EVP_PKEY *pubkey, **ppkey;
     FILE *pubkeyf;
+    char *lpk_arg = apr_pstrdup(p, const_lpk_arg);
+    char *colon = ap_strchr(lpk_arg, ':');
+    char **plogid, *logid_binary;
 
-    pubkeyf = fopen(lpk, "r");
+    if (!colon) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                     "expected <logid>:pubkey-file");
+        return APR_EINVAL;
+    }
+
+    pubkey_fname = colon + 1;
+    logid = lpk_arg;
+    *colon = '\0';
+
+    if (strlen(logid) != 64) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                     "expected 64-character hex log id");
+    }
+
+    logid_binary = apr_palloc(p, 32);
+    rv = apr_unescape_hex(logid_binary, logid, 64, 0, NULL);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
+                     "could not unencode log id %s",
+                     logid);
+        return rv;
+    }
+
+    pubkeyf = fopen(pubkey_fname, "r");
     if (!pubkeyf) {
         rv = errno; /* Unix-ism! */
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
                      "could not open log public key file %s",
-                     lpk);
+                     pubkey_fname);
         return rv;
     }
 
@@ -2483,7 +2536,7 @@ static apr_status_t save_log_public_key(apr_pool_t *p, const char *lpk,
         rv = APR_EINVAL;
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
                      "PEM_read_PUBKEY() failed to process public key file %s",
-                     lpk);
+                     pubkey_fname);
         return rv;
     }
 
@@ -2491,9 +2544,13 @@ static apr_status_t save_log_public_key(apr_pool_t *p, const char *lpk,
 
     if (!sconf->log_public_keys) {
         sconf->log_public_keys = apr_array_make(p, 2, sizeof(EVP_PKEY *));
+        sconf->log_ids = apr_array_make(p, 2, sizeof(char *));
     }
     ppkey = (EVP_PKEY **)apr_array_push(sconf->log_public_keys);
     *ppkey = pubkey;
+
+    plogid = (char **)apr_array_push(sconf->log_ids);
+    *plogid = logid_binary;
 
     return rv;
 }
@@ -2545,7 +2602,7 @@ static const char *ct_log_pubkeys(cmd_parms *cmd, void *x, int argc,
     for (i = 0; i < argc; i++) {
         rv = save_log_public_key(cmd->pool, argv[i], sconf);
         if (rv) {
-            return apr_psprintf(cmd->pool, "CTLogPublicKeys: Error with log URL "
+            return apr_psprintf(cmd->pool, "CTLogPublicKeys: Error with log id/URL "
                                 "%s: (%d)%pm",
                                 argv[i], rv, &rv);
         }
