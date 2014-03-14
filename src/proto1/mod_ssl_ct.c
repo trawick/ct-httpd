@@ -430,12 +430,14 @@ static apr_status_t parse_sct(const char *source,
                  "SCT from %s: version %d timestamp %s hash alg %d sig alg %d",
                  source, fields->version, fields->timestr,
                  fields->hash_alg, fields->sig_alg);
+#if AP_MODULE_MAGIC_AT_LEAST(20130702,2)
     ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Log Id",
                 fields->logid, sizeof(fields->logid),
                 AP_LOG_DATA_SHOW_OFFSET);
     ap_log_data(APLOG_MARK, APLOG_DEBUG, s, "Signature",
                 fields->sig, fields->siglen,
                 AP_LOG_DATA_SHOW_OFFSET);
+#endif /* httpd has ap_log_*data() */
 
     return rv;
 }
@@ -1517,7 +1519,7 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                      conncfg->ocsp_sct_list_size,
                      AP_LOG_DATA_SHOW_OFFSET);
     }
-#endif /* httpd has ap_log_cdata() */
+#endif /* httpd has ap_log_*data() */
 
     if (!conncfg->all_scts) {
         conncfg->all_scts = apr_array_make(p, 4, sizeof(ct_sct_data));
