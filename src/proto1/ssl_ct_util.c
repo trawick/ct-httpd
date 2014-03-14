@@ -549,3 +549,145 @@ apr_status_t ctutil_read_var_bytes(const unsigned char **mem, apr_size_t *avail,
     return rv;
 }
 
+#define TESTURL1 "http://127.0.0.1:8888"
+#define TESTURL2 "http://127.0.0.1:9999"
+#define TESTURL3 "http://127.0.0.1:10000"
+
+void ctutil_run_internal_tests(apr_pool_t *p)
+{
+    apr_array_header_t *arr;
+    const char *filecontents =
+      " " TESTURL1 " \r\n" TESTURL2 "\n"
+      TESTURL3 /* no "\n" */ ;
+    unsigned char buf[8], *ch;
+    const unsigned char *const_ch;
+    apr_size_t avail;
+    apr_status_t rv;
+    apr_uint16_t val16;
+    apr_uint64_t val64;
+
+    ctutil_buffer_to_array(p, filecontents, strlen(filecontents), &arr);
+    
+    ap_assert(ctutil_in_array(TESTURL1, arr));
+    ap_assert(ctutil_in_array(TESTURL2, arr));
+    ap_assert(ctutil_in_array(TESTURL3, arr));
+    ap_assert(!ctutil_in_array(TESTURL1 "x", arr));
+
+    ch = buf;
+    avail = 8;
+    rv = ctutil_serialize_uint64(&ch, &avail, 0xDEADBEEFCAFEBABE);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(ch == buf + 8);
+    ap_assert(buf[0] == 0xDE);
+    ap_assert(buf[1] == 0xAD);
+    ap_assert(buf[2] == 0xBE);
+    ap_assert(buf[3] == 0xEF);
+    ap_assert(buf[4] == 0xCA);
+    ap_assert(buf[5] == 0xFE);
+    ap_assert(buf[6] == 0xBA);
+    ap_assert(buf[7] == 0xBE);
+
+    const_ch = buf;
+    avail = 8;
+    rv = ctutil_deserialize_uint64(&const_ch, &avail, &val64);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(const_ch == buf + 8);
+    ap_assert(val64 == 0xDEADBEEFCAFEBABE);
+
+    ch = buf;
+    avail = 7;
+    ap_assert(ctutil_serialize_uint64(&ch, &avail, 0xDEADBEEFCAFEBABE)
+              == APR_EINVAL);
+
+    ch = buf;
+    avail = 3;
+    rv = ctutil_serialize_uint24(&ch, &avail, 0xDEADBE);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(ch == buf + 3);
+    ap_assert(buf[0] == 0xDE);
+    ap_assert(buf[1] == 0xAD);
+    ap_assert(buf[2] == 0xBE);
+
+    ch = buf;
+    avail = 1;
+    ap_assert(ctutil_serialize_uint16(&ch, &avail, 0xDEAD)
+              == APR_EINVAL);
+
+    ch = buf;
+    avail = 2;
+    rv = ctutil_serialize_uint16(&ch, &avail, 0xDEAD);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(ch == buf + 2);
+    ap_assert(buf[0] == 0xDE);
+    ap_assert(buf[1] == 0xAD);
+
+    const_ch = buf;
+    avail = 2;
+    rv = ctutil_deserialize_uint16(&const_ch, &avail, &val16);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(val16 == 0xDEAD);
+
+    ch = buf;
+    avail = 1;
+    ap_assert(ctutil_serialize_uint16(&ch, &avail, 0xDEAD)
+              == APR_EINVAL);
+
+    ch = buf;
+    avail = 1;
+    rv = ctutil_serialize_uint8(&ch, &avail, 0xDE);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 0);
+    ap_assert(ch == buf + 1);
+    ap_assert(buf[0] == 0xDE);
+
+    ch = buf;
+    avail = 0;
+    ap_assert(ctutil_serialize_uint8(&ch, &avail, 0xDE)
+              == APR_EINVAL);
+
+    ch = buf;
+    avail = 8;
+    rv = ctutil_write_var16_bytes(&ch, &avail, 
+                                  (unsigned char *)"\x01""\x02""\x03""\x04", 4);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 2);
+    ap_assert(ch == buf + 6);
+    ap_assert(buf[0] == 0);
+    ap_assert(buf[1] == 4);
+    ap_assert(buf[2] == 0x01);
+    ap_assert(buf[3] == 0x02);
+    ap_assert(buf[4] == 0x03);
+    ap_assert(buf[5] == 0x04);
+
+    ch = buf;
+    avail = 3;
+    rv = ctutil_write_var16_bytes(&ch, &avail, 
+                                  (unsigned char *)"\x01""\x02""\x03""\x04", 4);
+    ap_assert(rv == APR_EINVAL);
+
+    ch = buf;
+    avail = 8;
+    rv = ctutil_write_var24_bytes(&ch, &avail, 
+                                  (unsigned char *)"\x01""\x02""\x03""\x04", 4);
+    ap_assert(rv == APR_SUCCESS);
+    ap_assert(avail == 1);
+    ap_assert(ch == buf + 7);
+    ap_assert(buf[0] == 0);
+    ap_assert(buf[1] == 0);
+    ap_assert(buf[2] == 4);
+    ap_assert(buf[3] == 0x01);
+    ap_assert(buf[4] == 0x02);
+    ap_assert(buf[5] == 0x03);
+    ap_assert(buf[6] == 0x04);
+
+    ch = buf;
+    avail = 4;
+    rv = ctutil_write_var24_bytes(&ch, &avail, 
+                                  (unsigned char *)"\x01""\x02""\x03""\x04", 4);
+    ap_assert(rv == APR_EINVAL);
+}

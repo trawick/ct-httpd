@@ -91,4 +91,6 @@ apr_status_t ctutil_write_var24_bytes(unsigned char **mem, apr_size_t *avail,
                                       const unsigned char *val,
                                       apr_uint32_t len);
 
+void ctutil_run_internal_tests(apr_pool_t *p);
+
 #endif /* SSL_CT_UTIL_H */
