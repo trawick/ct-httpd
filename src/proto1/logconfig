@@ -125,15 +125,27 @@ def dump(cur, args):
             pubkey = row[2]
         else:
             pubkey = '(not configured)'
+        if row[3]:
+            if row[3].upper() == 'F':
+                status = 'DISTRUSTED'
+            elif row[3].upper() == 'T':
+                status = 'trusted'
+            else:
+                # blow up, unexpected value
+                assert row[3].upper() == 'F'
+        else:
+            status = 'trusted (by default)'
+
         if row[4]:
             url = row[4]
         else:
             url = '(not configured)'
         print 'Log entry:'
         print '  Record ' + str(row[0])
-        print '  Id ' + row[1]
-        print '  Public key ' + pubkey
-        print '  URL ' + url
+        print '  Status         : ' + status
+        print '  Id             : ' + row[1]
+        print '  Public key file: ' + pubkey
+        print '  URL            : ' + url
         print ''
 
 
