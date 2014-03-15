@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 
-# XXX the user gives us a PEM file for the public key, silly!
-
 import os
 import sqlite3
 import sys
@@ -13,7 +11,7 @@ def create_tables(dbname):
     cur.execute('CREATE TABLE loginfo('
               + 'id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, '
               + 'log_id TEXT UNIQUE, ' # upper-hex-encoded log id
-              + 'public_key TEXT, ' # upper-hex-encoded DER-formatted public key
+              + 'public_key TEXT, ' # path to PEM-encoded file
               + 'audit_status TEXT, ' # 'F' for Failed-audit
               + 'url TEXT)')
     cur.close()
@@ -49,11 +47,18 @@ def log_id_arg(cur, args):
         usage()
     return log_id.upper()
 
+def public_key_arg(args):
+    pubkey = args.pop(0)
+    if not os.path.exists(pubkey):
+        print >> sys.stderr, 'Public key file %s could not be read' % pubkey
+        sys.exit(1)
+    return pubkey
+
 def configure_public_key(cur, args):
     if len(args) != 2:
         usage()
     log_id = log_id_arg(cur, args)
-    public_key, = args
+    public_key = public_key_arg(args)
     rec_id = find_log_id(cur, log_id)
     if rec_id == None:
         stmt = 'INSERT INTO loginfo (log_id, public_key) VALUES(?, ?)'
