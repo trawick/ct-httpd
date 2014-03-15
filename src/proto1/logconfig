@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-# XXX upper case whatever the user gives us for log id (everywhere)
 # XXX the user gives us a PEM file for the public key, silly!
 
 import os
@@ -13,8 +12,8 @@ def create_tables(dbname):
 
     cur.execute('CREATE TABLE loginfo('
               + 'id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, '
-              + 'log_id TEXT UNIQUE, ' # hex-encoded log id
-              + 'public_key TEXT, ' # hex-encoded DER-formatted public key
+              + 'log_id TEXT UNIQUE, ' # upper-hex-encoded log id
+              + 'public_key TEXT, ' # upper-hex-encoded DER-formatted public key
               + 'audit_status TEXT, ' # 'F' for Failed-audit
               + 'url TEXT)')
     cur.close()
@@ -33,10 +32,28 @@ def find_log_id(cur, log_id):
         return recs[0][0]
 
 
+def log_id_arg(cur, args):
+    log_id = args.pop(0)
+    if log_id[0] == '#':
+        log_id = log_id[1:]
+        stmt = 'SELECT * FROM loginfo WHERE id = ?'
+        cur.execute(stmt, [log_id])
+        recs = list(cur.fetchall())
+        assert len(recs) < 2
+        if len(recs) == 0:
+            print >> sys.stderr, 'Log #%s was not found' % log_id
+            sys.exit(1)
+        return recs[0][1]
+
+    if len(log_id) != 64:
+        usage()
+    return log_id.upper()
+
 def configure_public_key(cur, args):
     if len(args) != 2:
         usage()
-    log_id, public_key = args
+    log_id = log_id_arg(cur, args)
+    public_key, = args
     rec_id = find_log_id(cur, log_id)
     if rec_id == None:
         stmt = 'INSERT INTO loginfo (log_id, public_key) VALUES(?, ?)'
@@ -49,7 +66,8 @@ def configure_public_key(cur, args):
 def configure_url(cur, args):
     if len(args) != 2:
         usage()
-    log_id, url = args
+    log_id = log_id_arg(cur, args)
+    url, = args
     rec_id = find_log_id(cur, log_id)
     if rec_id == None:
         stmt = 'INSERT INTO loginfo (log_id, url) VALUES(?, ?)'
@@ -62,7 +80,7 @@ def configure_url(cur, args):
 def forget_log(cur, args):
     if len(args) != 1:
         usage()
-    log_id, = args
+    log_id = log_id_arg(cur, args)
     rec_id = find_log_id(cur, log_id)
     if rec_id == None:
         print >> sys.stderr, "Log with id %s is not configured" % log_id
@@ -73,7 +91,8 @@ def forget_log(cur, args):
 def trust_distrust_log(cur, args):
     if len(args) != 2:
         usage()
-    log_id, flag = args
+    log_id = log_id_arg(cur, args)
+    flag, = args
     rec_id = find_log_id(cur, log_id)
     if rec_id == None:
         stmt = 'INSERT INTO loginfo (log_id, audit_status) VALUES(?, ?)'
@@ -97,11 +116,34 @@ def dump(cur, args):
     stmt = 'SELECT * FROM loginfo'
     cur.execute(stmt)
     for row in cur.fetchall():
-        print row
+        if row[2]:
+            pubkey = row[2]
+        else:
+            pubkey = '(not configured)'
+        if row[4]:
+            url = row[4]
+        else:
+            url = '(not configured)'
+        print 'Log entry:'
+        print '  Record ' + str(row[0])
+        print '  Id ' + row[1]
+        print '  Public key ' + pubkey
+        print '  URL ' + url
+        print ''
 
 
 def usage():
-    print >> sys.stderr, 'Usage yada yada yada'
+    print >> sys.stderr, 'Usage: %s /path/to/log-config-db command args'
+    print >> sys.stderr, 'Commands:'
+    print >> sys.stderr, '  dump                                                          display config-db contents'
+    print >> sys.stderr, '  configure-public-key log-id /path/to/log-public-key.pem       configure public key'
+    print >> sys.stderr, '  configure-url log-id http://www.example.com/path/             configure URL'
+    print >> sys.stderr, '  trust log-id                                                  mark log as trusted (default)'
+    print >> sys.stderr, '  distrust log-id                                               mark log as untrusted'
+    print >> sys.stderr, '  forget log-id                                                 remove log from config-db'
+    print >> sys.stderr, 'log-id can be one of the following:'
+    print >> sys.stderr, '  log id in hex (64 chars)'
+    print >> sys.stderr, '  #<record-number>, displayable with the dump command'
     sys.exit(1)
 
 
