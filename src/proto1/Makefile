@@ -19,6 +19,7 @@ install: mod_ssl_ct.la stop pure-install
 pure-install: mod_ssl_ct.la
 	$(APXS) -i mod_ssl_ct.la
 	cp statuscgi.py $(INST)/cgi-bin
+	cp ctlogconfig $(INST)/bin
 	chmod 0755 $(INST)/cgi-bin/statuscgi.py
 
 TS := $(shell date)
