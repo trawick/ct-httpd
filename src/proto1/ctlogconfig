@@ -171,26 +171,25 @@ dbname = sys.argv[1]
 cmd = sys.argv[2]
 args = sys.argv[3:]
 
-if not os.path.exists(dbname):
-    create_tables(dbname)
+cmds = {'configure-public-key': configure_public_key,
+        'configure-url': configure_url,
+        'distrust': distrust_log,
+        'trust': trust_log,
+        'forget': forget_log,
+        'dump': dump,
+    }
+
+if not cmd in cmds:
+    usage()
+
+if cmd != 'dump':
+    if not os.path.exists(dbname):
+        create_tables(dbname)
 
 cxn = sqlite3.connect(dbname)
 cur = cxn.cursor()
 
-if cmd == 'configure-public-key':
-    configure_public_key(cur, args)
-elif cmd == 'configure-url':
-    configure_url(cur, args)
-elif cmd == 'distrust':
-    distrust_log(cur, args)
-elif cmd == 'trust':
-    trust_log(cur, args)
-elif cmd == 'forget':
-    forget_log(cur, args)
-elif cmd == 'dump':
-    dump(cur, args)
-else:
-    usage()
+cmds[cmd](cur, args)
 
 cur.close()
 cxn.commit()
