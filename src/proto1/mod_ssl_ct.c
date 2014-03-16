@@ -50,6 +50,8 @@
 #include "apr_signal.h"
 #include "apr_strings.h"
 
+#include "apr_dbd.h"
+
 #include "httpd.h"
 #include "http_config.h"
 #include "http_core.h"
@@ -895,11 +897,83 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
     return rv;
 }
 
+static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
+{
+    apr_status_t rv;
+    const apr_dbd_driver_t *driver;
+    apr_dbd_t *handle;
+    apr_dbd_results_t *res;
+    apr_dbd_row_t *row;
+    int rc;
+
+    apr_dbd_init(pconf);
+
+    rv = apr_dbd_get_driver(pconf, "sqlite3", &driver);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "APR SQLite3 driver can't be loaded");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rv = apr_dbd_open(driver, pconf, "/tmp/logconfig", &handle);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "Can't open SQLite3 db %s", "/tmp/logconfig");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    res = NULL;
+    rc = apr_dbd_select(driver, pconf, handle, &res,
+                        "SELECT * FROM loginfo", 0);
+
+    if (rc != 0) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "SELECT of loginfo records failed");
+        apr_dbd_close(driver, handle);
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rc = apr_dbd_num_tuples(driver, res);
+    switch (rc) {
+    case -1:
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "Unexpected asynchronous result reading %s",
+                     "/tmp/logconfig");
+        apr_dbd_close(driver, handle);
+        return HTTP_INTERNAL_SERVER_ERROR;
+    case 0:
+        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s_main,
+                     "Log configuration in %s is empty",
+                     "/tmp/logconfig");
+        apr_dbd_close(driver, handle);
+        return OK;
+    default:
+        /* a form of nothing that quiets some lints */
+        break;
+    }        
+        
+    for (rv = apr_dbd_get_row(driver, pconf, res, &row, -1);
+         rv == APR_SUCCESS;
+         rv = apr_dbd_get_row(driver, pconf, res, &row, -1)) {
+
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                     "Log config: Record %s, id %s, public key file %s, audit status %s, URL %s",
+                     apr_dbd_get_entry(driver, row, 0),
+                     apr_dbd_get_entry(driver, row, 1),
+                     apr_dbd_get_entry(driver, row, 2),
+                     apr_dbd_get_entry(driver, row, 3),
+                     apr_dbd_get_entry(driver, row, 4));
+    }
+
+    apr_dbd_close(driver, handle);
+
+    return OK;
+}
+
 static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                               apr_pool_t *ptemp, server_rec *s_main)
 {
     apr_status_t rv;
-
 #ifdef HAVE_SCT_DAEMON
     apr_proc_t *procnew = NULL;
     const char *userdata_key = "sct_daemon_init";
@@ -943,7 +1017,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 #endif /* HAVE_SCT_DAEMON */
 
-    return OK;
+    return read_config_db(pconf, s_main);
 }
 
 static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
