@@ -150,7 +150,7 @@ def dump(cur, args):
 
 
 def usage():
-    print >> sys.stderr, 'Usage: %s /path/to/log-config-db command args'
+    print >> sys.stderr, 'Usage: %s /path/to/log-config-db command args' % sys.argv[0]
     print >> sys.stderr, 'Commands:'
     print >> sys.stderr, '  dump                                                          display config-db contents'
     print >> sys.stderr, '  configure-public-key log-id /path/to/log-public-key.pem       configure public key'
