@@ -35,6 +35,7 @@ what looks like a build nightmare.
 
 * Build OpenSSL 1.0.2-beta1
 * Patch httpd trunk with src/proto1/httpd.patch (using OpenSSL 1.0.2-beta1)
+* Use APR-Util with built-in SQLite3 database support (--with-sqlite3)
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
 ```
