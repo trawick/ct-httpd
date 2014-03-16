@@ -108,6 +108,7 @@ typedef struct ct_server_config {
     const char *audit_storage;
     const char *ct_tools_dir;
     const char *ct_exe;
+    const char *log_config;
     apr_time_t max_sct_age;
 #define PROXY_AWARENESS_UNSET -1
 #define PROXY_OBLIVIOUS        1
@@ -897,6 +898,38 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
     return rv;
 }
 
+static int log_config_readable(apr_pool_t *pconf, const char *logconfig)
+{
+    const apr_dbd_driver_t *driver;
+    apr_dbd_t *handle;
+    apr_status_t rv;
+    apr_dbd_results_t *res;
+    int rc;
+
+    rv = apr_dbd_get_driver(pconf, "sqlite3", &driver);
+    if (rv != APR_SUCCESS) {
+        return 0;
+    }
+
+    rv = apr_dbd_open(driver, pconf, logconfig, &handle);
+    if (rv != APR_SUCCESS) {
+        return 0;
+    }
+
+    /* is there a cheaper way? */
+    res = NULL;
+    rc = apr_dbd_select(driver, pconf, handle, &res,
+                        "SELECT * FROM loginfo WHERE id = 0", 0);
+
+    apr_dbd_close(driver, handle);
+
+    if (rc != 0) {
+        return 0;
+    }
+
+    return 1;
+}
+
 static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
 {
     apr_status_t rv;
@@ -905,8 +938,8 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
     apr_dbd_results_t *res;
     apr_dbd_row_t *row;
     int rc;
-
-    apr_dbd_init(pconf);
+    ct_server_config *sconf = ap_get_module_config(s_main->module_config,
+                                                   &ssl_ct_module);
 
     rv = apr_dbd_get_driver(pconf, "sqlite3", &driver);
     if (rv != APR_SUCCESS) {
@@ -915,10 +948,10 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rv = apr_dbd_open(driver, pconf, "/tmp/logconfig", &handle);
+    rv = apr_dbd_open(driver, pconf, sconf->log_config, &handle);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
-                     "Can't open SQLite3 db %s", "/tmp/logconfig");
+                     "Can't open SQLite3 db %s", sconf->log_config);
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -938,13 +971,13 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
     case -1:
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "Unexpected asynchronous result reading %s",
-                     "/tmp/logconfig");
+                     sconf->log_config);
         apr_dbd_close(driver, handle);
         return HTTP_INTERNAL_SERVER_ERROR;
     case 0:
         ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s_main,
                      "Log configuration in %s is empty",
-                     "/tmp/logconfig");
+                     sconf->log_config);
         apr_dbd_close(driver, handle);
         return OK;
     default:
@@ -955,14 +988,19 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
     for (rv = apr_dbd_get_row(driver, pconf, res, &row, -1);
          rv == APR_SUCCESS;
          rv = apr_dbd_get_row(driver, pconf, res, &row, -1)) {
+        const char *id = apr_dbd_get_entry(driver, row, 0);
+        const char *log_id = apr_dbd_get_entry(driver, row, 1);
+        const char *public_key = apr_dbd_get_entry(driver, row, 2);
+        const char *audit_status = apr_dbd_get_entry(driver, row, 3);
+        const char *url = apr_dbd_get_entry(driver, row, 4);
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                      "Log config: Record %s, id %s, public key file %s, audit status %s, URL %s",
-                     apr_dbd_get_entry(driver, row, 0),
-                     apr_dbd_get_entry(driver, row, 1),
-                     apr_dbd_get_entry(driver, row, 2),
-                     apr_dbd_get_entry(driver, row, 3),
-                     apr_dbd_get_entry(driver, row, 4));
+                     id,
+                     log_id,
+                     public_key ? public_key : "(unset)",
+                     audit_status ? audit_status : "(unset, defaults to trusted)",
+                     url ? url : "(unset)");
     }
 
     apr_dbd_close(driver, handle);
@@ -973,6 +1011,8 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
 static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                               apr_pool_t *ptemp, server_rec *s_main)
 {
+    ct_server_config *sconf = ap_get_module_config(s_main->module_config,
+                                                   &ssl_ct_module);
     apr_status_t rv;
 #ifdef HAVE_SCT_DAEMON
     apr_proc_t *procnew = NULL;
@@ -1017,7 +1057,14 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 #endif /* HAVE_SCT_DAEMON */
 
-    return read_config_db(pconf, s_main);
+    if (sconf->log_config) {
+        int ret = read_config_db(pconf, s_main);
+        if (ret != OK) {
+            return ret;
+        }
+    }
+
+    return OK;
 }
 
 static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
@@ -1046,6 +1093,15 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "Directive CTToolsDir is required");
         return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (sconf->log_config) {
+        if (!log_config_readable(pconf, sconf->log_config)) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                         "Log config file %s cannot be read",
+                         sconf->log_config);
+            return HTTP_INTERNAL_SERVER_ERROR;
+        }
     }
 
     return OK;
@@ -2043,6 +2099,8 @@ static int ssl_ct_pre_config(apr_pool_t *pconf, apr_pool_t *plog,
         return rv;
     }
 
+    apr_dbd_init(pconf);
+
     ctutil_run_internal_tests(ptemp);
 
     return OK;
@@ -2203,6 +2261,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
     conf->max_sct_age = base->max_sct_age;
+    conf->log_config = base->log_config;
 
     conf->proxy_awareness = (virt->proxy_awareness != PROXY_AWARENESS_UNSET)
         ? virt->proxy_awareness
@@ -2540,6 +2599,21 @@ static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }    
 
+static const char *ct_log_config(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    sconf->log_config = arg;
+
+    return NULL;
+}
+
 static const char *ct_proxy_awareness(cmd_parms *cmd, void *x, const char *arg)
 {
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
@@ -2576,6 +2650,8 @@ static const command_rec ct_cmds[] =
                   "Location of certificate-transparency.org tools"),
     AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
                   "Max age of SCT obtained from log before refresh"),
+    AP_INIT_TAKE1("CTLogConfigDB", ct_log_config, NULL, RSRC_CONF,
+                  "Log configuration database"),
     AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL, RSRC_CONF,
                   "\"oblivious\" to neither ask for nor check SCTs, "
                   "\"aware\" to ask for and process SCTs but allow all connections, "
