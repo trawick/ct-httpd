@@ -35,7 +35,7 @@ what looks like a build nightmare.
 
 * Build OpenSSL 1.0.2-beta1
 * Patch httpd trunk with src/proto1/httpd.patch (using OpenSSL 1.0.2-beta1)
-* Use APR-Util with built-in SQLite3 database support (--with-sqlite3)
+* If you want to store CT log configuration in a database, which will allow dynamic updates in the future, use a build of APR-Util with SQLite3 database support (--with-sqlite3) **and** use CTLogConfigDB instead of CTStaticLogConfig.
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
 ```
@@ -53,7 +53,7 @@ what looks like a build nightmare.
     CTMaxSCTAge 3600 # 1 hour
 ```
 * If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate under CTSCTStorage.  (The SHA256 digest of the server certificate is the directory name.)
-* You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.
+* You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.  This requires SQLite3 support in APR-Util.
 * The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
 
 ### Support for off-line auditing of SCTs received by the proxy from servers
