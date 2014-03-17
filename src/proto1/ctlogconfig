@@ -44,7 +44,8 @@ def log_id_arg(cur, args):
         return recs[0][1]
 
     if len(log_id) != 64:
-        usage()
+        print >> sys.stderr, 'Log id "%s" is not formatted correctly' % log_id
+        sys.exit(1)
     return log_id.upper()
 
 def public_key_arg(args):
@@ -184,9 +185,12 @@ cmds_requiring_db = ['dump', 'forget'] # db must already exist
 if not cmd in cmds:
     usage()
 
-if not cmd in cmds_requiring_db:
-    if not os.path.exists(dbname):
+if not os.path.exists(dbname):
+    if not cmd in cmds_requiring_db:
         create_tables(dbname)
+    else:
+        print >> sys.stderr, 'Database "%s" does not exist' % dbname
+        sys.exit(1)
 
 cxn = sqlite3.connect(dbname)
 cur = cxn.cursor()
