@@ -179,10 +179,12 @@ cmds = {'configure-public-key': configure_public_key,
         'dump': dump,
     }
 
+cmds_requiring_db = ['dump', 'forget'] # db must already exist
+
 if not cmd in cmds:
     usage()
 
-if cmd != 'dump':
+if not cmd in cmds_requiring_db:
     if not os.path.exists(dbname):
         create_tables(dbname)
 
