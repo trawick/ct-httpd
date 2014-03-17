@@ -102,6 +102,8 @@ typedef struct ct_log_config {
     const char *log_id;
     const char *url;
     const char *public_key_pem;
+    const char *uri_str;
+    apr_uri_t uri;
     EVP_PKEY *public_key;
 #define TRUSTED_UNSET      -1
 #define DISTRUSTED          0
@@ -988,6 +990,42 @@ static apr_status_t read_public_key(apr_pool_t *p, const char *pubkey_fname,
     return APR_SUCCESS;
 }
 
+static apr_status_t parse_log_url(apr_pool_t *p, const char *lu, apr_uri_t *puri)
+{
+    apr_status_t rv;
+    apr_uri_t uri;
+
+    rv = apr_uri_parse(p, lu, &uri);
+    if (rv == APR_SUCCESS) {
+        if (!uri.scheme
+            || !uri.hostname
+            || !uri.path) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Error in log url \"%s\": URL can't be parsed or is missing required "
+                         "elements", lu);
+            rv = APR_EINVAL;
+        }
+        if (strcmp(uri.scheme, "http")) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Error in log url \"%s\": Only scheme \"http\" (instead of \"%s\") "
+                         "is currently accepted",
+                         lu, uri.scheme);
+            rv = APR_EINVAL;
+        }
+        if (strcmp(uri.path, "/")) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Error in log url \"%s\": Only path \"/\" (instead of \"%s\") "
+                         "is currently accepted",
+                         lu, uri.path);
+            rv = APR_EINVAL;
+        }
+    }
+    if (rv == APR_SUCCESS) {
+        *puri = uri;
+    }
+    return rv;
+}
+
 /* The log_config array should have already been allocated from p. */
 static apr_status_t save_log_config(apr_array_header_t *log_config,
                                     apr_pool_t *p,
@@ -997,6 +1035,7 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
                                     const char *url)
 {
     apr_status_t rv;
+    apr_uri_t uri;
     ct_log_config *newconf, **pnewconf;
     int trusted;
     EVP_PKEY *public_key;
@@ -1023,6 +1062,13 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
         }
     }
 
+    if (url) {
+        rv = parse_log_url(p, url, &uri);
+        if (rv != APR_SUCCESS) {
+            return rv;
+        }
+    }
+
     newconf = apr_pcalloc(p, sizeof(ct_log_config));
     pnewconf = (ct_log_config **)apr_array_push(log_config);
     *pnewconf = newconf;
@@ -1032,6 +1078,10 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
 
     newconf->log_id = log_id;
     newconf->url = url;
+    if (url) {
+        newconf->uri = uri;
+        newconf->uri_str = apr_uri_unparse(p, &uri, 0);
+    }
     newconf->public_key_pem = pubkey_fname;
 
     return APR_SUCCESS;
@@ -2456,43 +2506,6 @@ static void ct_register_hooks(apr_pool_t *p)
                      NULL, NULL, APR_HOOK_MIDDLE);
 }
 
-static apr_status_t save_log_url(apr_pool_t *p, const char *lu, ct_server_config *sconf)
-{
-    apr_status_t rv;
-    apr_uri_t uri, *puri;
-    char **pstr;
-
-    rv = apr_uri_parse(p, lu, &uri);
-    if (rv == APR_SUCCESS) {
-        if (!uri.scheme
-            || !uri.hostname
-            || !uri.path) {
-            rv = APR_EINVAL;
-        }
-        if (strcmp(uri.scheme, "http")) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                         "Scheme must be \"http\" instead of \"%s\"",
-                         uri.scheme);
-            rv = APR_EINVAL;
-        }
-        if (strcmp(uri.path, "/")) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                         "No URI path other than \"/\" is currently accepted (you have \"%s\")",
-                         uri.path);
-            rv = APR_EINVAL;
-        }
-        if (!sconf->log_urls) {
-            sconf->log_urls = apr_array_make(p, 2, sizeof(uri));
-            sconf->log_url_strs = apr_array_make(p, 2, sizeof(char *));
-        }
-        puri = (apr_uri_t *)apr_array_push(sconf->log_urls);
-        *puri = uri;
-        pstr = (char **)apr_array_push(sconf->log_url_strs);
-        *pstr = apr_uri_unparse(p, &uri, 0);
-    }
-    return rv;
-}
-
 static apr_status_t save_log_public_key(apr_pool_t *p, const char *const_lpk_arg,
                                         ct_server_config *sconf)
 {
@@ -2549,6 +2562,8 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
 {
     int i;
     apr_status_t rv;
+    apr_uri_t uri, *puri;
+    char **pstr;
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
     const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
@@ -2562,10 +2577,20 @@ static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[]
     }
 
     for (i = 0; i < argc; i++) {
-        rv = save_log_url(cmd->pool, argv[i], sconf);
+        if (!sconf->log_urls) {
+            sconf->log_urls = apr_array_make(cmd->pool, 2, sizeof(uri));
+            sconf->log_url_strs = apr_array_make(cmd->pool, 2, sizeof(char *));
+        }
+        rv = parse_log_url(cmd->pool, argv[i], &uri);
         if (rv) {
             return apr_psprintf(cmd->pool, "CTLogs: Error with log URL %s: (%d)%pm",
                                 argv[i], rv, &rv);
+        }
+        else {
+            puri = (apr_uri_t *)apr_array_push(sconf->log_urls);
+            *puri = uri;
+            pstr = (char **)apr_array_push(sconf->log_url_strs);
+            *pstr = apr_uri_unparse(cmd->pool, &uri, 0);
         }
     }
 
