@@ -509,6 +509,9 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
     config_elts  = (ct_log_config **)log_config->elts;
 
     for (i = 0; i < log_config->nelts; i++) {
+        if (config_elts[i]->trusted == DISTRUSTED) {
+            continue;
+        }
         if (!config_elts[i]->uri_str) {
             continue;
         }
@@ -542,6 +545,9 @@ static int uri_in_config(const char *needle, const apr_array_header_t *haystack)
 
     elts = (ct_log_config **)haystack->elts;
     for (i = 0; i < haystack->nelts; i++) {
+        if (elts[i]->trusted == DISTRUSTED) {
+            continue;
+        }
         if (!elts[i]->uri_str) {
             continue;
         }
@@ -690,6 +696,9 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
     }
 
     for (i = 0; i < log_config->nelts; i++) {
+        if (config_elts[i]->trusted == DISTRUSTED) {
+            continue;
+        }
         if (!config_elts[i]->url) {
             continue;
         }

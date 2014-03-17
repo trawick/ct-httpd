@@ -61,6 +61,11 @@ apr_status_t sct_verify_signature(conn_rec *c, sct_fields_t *sctf,
         }
 
         if (!memcmp(logid, sctf->logid, LOG_ID_SIZE)) {
+            if (config_elts[i]->trusted == DISTRUSTED) {
+                ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
+                              "Got SCT from distrusted log");
+                return APR_EINVAL;
+            }
             rv = verify_signature(sctf, pubkey);
             if (rv != APR_SUCCESS) {
                 ap_log_cerror(APLOG_MARK, 
