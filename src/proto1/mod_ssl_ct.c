@@ -1087,7 +1087,9 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
     return APR_SUCCESS;
 }
 
-static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
+static apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
+                                   const char *log_config_fname,
+                                   apr_array_header_t *log_config)
 {
     apr_status_t rv;
     const apr_dbd_driver_t *driver;
@@ -1095,32 +1097,32 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
     apr_dbd_results_t *res;
     apr_dbd_row_t *row;
     int rc;
-    ct_server_config *sconf = ap_get_module_config(s_main->module_config,
-                                                   &ssl_ct_module);
 
-    rv = apr_dbd_get_driver(pconf, "sqlite3", &driver);
+    ap_assert(log_config);
+
+    rv = apr_dbd_get_driver(p, "sqlite3", &driver);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
                      "APR SQLite3 driver can't be loaded");
-        return HTTP_INTERNAL_SERVER_ERROR;
+        return rv;
     }
 
-    rv = apr_dbd_open(driver, pconf, sconf->log_config_fname, &handle);
+    rv = apr_dbd_open(driver, p, log_config_fname, &handle);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
-                     "Can't open SQLite3 db %s", sconf->log_config_fname);
-        return HTTP_INTERNAL_SERVER_ERROR;
+                     "Can't open SQLite3 db %s", log_config_fname);
+        return rv;
     }
 
     res = NULL;
-    rc = apr_dbd_select(driver, pconf, handle, &res,
+    rc = apr_dbd_select(driver, p, handle, &res,
                         "SELECT * FROM loginfo", 0);
 
     if (rc != 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "SELECT of loginfo records failed");
         apr_dbd_close(driver, handle);
-        return HTTP_INTERNAL_SERVER_ERROR;
+        return APR_EINVAL;
     }
 
     rc = apr_dbd_num_tuples(driver, res);
@@ -1128,23 +1130,23 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
     case -1:
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "Unexpected asynchronous result reading %s",
-                     sconf->log_config_fname);
+                     log_config_fname);
         apr_dbd_close(driver, handle);
-        return HTTP_INTERNAL_SERVER_ERROR;
+        return APR_EINVAL;
     case 0:
         ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s_main,
                      "Log configuration in %s is empty",
-                     sconf->log_config_fname);
+                     log_config_fname);
         apr_dbd_close(driver, handle);
-        return OK;
+        return APR_SUCCESS;
     default:
-        /* a form of nothing that quiets some lints */
+        /* quiet some lints */
         break;
-    }        
+    }
         
-    for (rv = apr_dbd_get_row(driver, pconf, res, &row, -1);
+    for (rv = apr_dbd_get_row(driver, p, res, &row, -1);
          rv == APR_SUCCESS;
-         rv = apr_dbd_get_row(driver, pconf, res, &row, -1)) {
+         rv = apr_dbd_get_row(driver, p, res, &row, -1)) {
         const char *id = apr_dbd_get_entry(driver, row, 0);
         const char *log_id = apr_dbd_get_entry(driver, row, 1);
         const char *public_key = apr_dbd_get_entry(driver, row, 2);
@@ -1159,21 +1161,17 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
                      audit_status ? audit_status : "(unset, defaults to trusted)",
                      url ? url : "(unset)");
 
-        if (!sconf->log_config) {
-            sconf->log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
-        }
-
-        rv = save_log_config(sconf->log_config, pconf,
+        rv = save_log_config(log_config, p,
                              log_id, public_key, audit_status, url);
         if (rv != APR_SUCCESS) {
             apr_dbd_close(driver, handle);
-            return HTTP_INTERNAL_SERVER_ERROR;
+            return rv;
         }
     }
 
     apr_dbd_close(driver, handle);
 
-    return OK;
+    return APR_SUCCESS;
 }
 
 static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
@@ -1226,9 +1224,13 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 #endif /* HAVE_SCT_DAEMON */
 
     if (sconf->log_config_fname) {
-        int ret = read_config_db(pconf, s_main);
-        if (ret != OK) {
-            return ret;
+        if (!sconf->log_config) {
+            sconf->log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
+        }
+        rv = read_config_db(pconf, s_main, sconf->log_config_fname,
+                             sconf->log_config);
+        if (rv != APR_SUCCESS) {
+            return HTTP_INTERNAL_SERVER_ERROR;
         }
     }
 
