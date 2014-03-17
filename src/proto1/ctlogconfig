@@ -30,8 +30,10 @@ def find_log_id(cur, log_id):
         return recs[0][0]
 
 
-def log_id_arg(cur, args):
+def log_id_arg(cur, args, required=True):
     log_id = args.pop(0)
+    if not required and log_id == '-':
+        return None
     if log_id[0] == '#':
         log_id = log_id[1:]
         stmt = 'SELECT * FROM loginfo WHERE id = ?'
@@ -72,15 +74,19 @@ def configure_public_key(cur, args):
 def configure_url(cur, args):
     if len(args) != 2:
         usage()
-    log_id = log_id_arg(cur, args)
+    log_id = log_id_arg(cur, args, False)
     url, = args
-    rec_id = find_log_id(cur, log_id)
-    if rec_id == None:
-        stmt = 'INSERT INTO loginfo (log_id, url) VALUES(?, ?)'
-        cur.execute(stmt, [log_id, url])
+    if log_id:
+        rec_id = find_log_id(cur, log_id)
+        if rec_id == None:
+            stmt = 'INSERT INTO loginfo (log_id, url) VALUES(?, ?)'
+            cur.execute(stmt, [log_id, url])
+        else:
+            stmt = 'UPDATE loginfo SET url = ? WHERE log_id = ?'
+            cur.execute(stmt, [url, log_id])
     else:
-        stmt = 'UPDATE loginfo SET url = ? WHERE log_id = ?'
-        cur.execute(stmt, [url, log_id])
+        stmt = 'INSERT INTO loginfo (url) VALUES(?)'
+        cur.execute(stmt, [url])
 
 
 def forget_log(cur, args):
@@ -122,6 +128,10 @@ def dump(cur, args):
     stmt = 'SELECT * FROM loginfo'
     cur.execute(stmt)
     for row in cur.fetchall():
+        if row[1]:
+            id = row[1]
+        else:
+            id = '(not configured)'
         if row[2]:
             pubkey = row[2]
         else:
@@ -144,7 +154,7 @@ def dump(cur, args):
         print 'Log entry:'
         print '  Record ' + str(row[0])
         print '  Status         : ' + status
-        print '  Id             : ' + row[1]
+        print '  Id             : ' + id
         print '  Public key file: ' + pubkey
         print '  URL            : ' + url
         print ''
