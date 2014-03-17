@@ -112,7 +112,8 @@ typedef struct ct_log_config {
 } ct_log_config;
 
 typedef struct ct_server_config {
-    apr_array_header_t *log_config;
+    apr_array_header_t *db_log_config;
+    apr_array_header_t *static_log_config;
     apr_array_header_t *log_urls;
     apr_array_header_t *log_url_strs;
     apr_array_header_t *log_public_keys;
@@ -161,6 +162,9 @@ typedef struct ct_callback_info {
 typedef struct ct_cached_server_data {
     apr_status_t validation_result;
 } ct_cached_server_data;
+
+/* the log configuration in use -- either db_log_config or static_log_config */
+static apr_array_header_t *log_config;
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
@@ -1224,14 +1228,36 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 #endif /* HAVE_SCT_DAEMON */
 
     if (sconf->log_config_fname) {
-        if (!sconf->log_config) {
-            sconf->log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
+        if (!sconf->db_log_config) {
+            sconf->db_log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
         }
         rv = read_config_db(pconf, s_main, sconf->log_config_fname,
-                             sconf->log_config);
+                             sconf->db_log_config);
         if (rv != APR_SUCCESS) {
             return HTTP_INTERNAL_SERVER_ERROR;
         }
+    }
+
+    if (sconf->static_log_config && sconf->db_log_config) {
+        if (sconf->static_log_config->nelts > 0
+            && sconf->db_log_config->nelts > 0) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                         "Either the static log configuration or the db log "
+                         "configuration must be empty");
+            return HTTP_INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    if (sconf->static_log_config && sconf->static_log_config->nelts > 0) {
+        log_config = sconf->static_log_config;
+    }
+    else if (sconf->db_log_config && sconf->db_log_config->nelts > 0) {
+        log_config = sconf->db_log_config;
+    }
+    else {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "No non-empty log configuration was provided");
+        return HTTP_INTERNAL_SERVER_ERROR;
     }
 
     return OK;
@@ -2432,7 +2458,8 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     conf->ct_tools_dir = base->ct_tools_dir;
     conf->max_sct_age = base->max_sct_age;
     conf->log_config_fname = base->log_config_fname;
-    conf->log_config = base->log_config;
+    conf->db_log_config = base->db_log_config;
+    conf->static_log_config = base->static_log_config;
 
     conf->proxy_awareness = (virt->proxy_awareness != PROXY_AWARENESS_UNSET)
         ? virt->proxy_awareness
@@ -2743,6 +2770,56 @@ static const char *ct_log_config_db(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
+                                        char *const argv[])
+{
+    apr_status_t rv;
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+    const char *log_id, *public_key, *audit_status, *url;
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+
+    if (err) {
+        return err;
+    }
+
+    if (argc != 4) {
+        return "CTStaticLogConfig: 4 arguments are required";
+    }
+
+    log_id = argv[0];
+    if (!strcmp(log_id, "-")) {
+        log_id = NULL;
+    }
+
+    public_key = argv[1];
+    if (!strcmp(public_key, "-")) {
+        public_key = NULL;
+    }
+    
+    audit_status = argv[2];
+    if (!strcmp(audit_status, "-")) {
+        audit_status = NULL;
+    }
+
+    url = argv[3];
+    if (!strcmp(url, "-")) {
+        url = NULL;
+    }
+
+    if (!sconf->static_log_config) {
+        sconf->static_log_config =
+            apr_array_make(cmd->pool, 2, sizeof(ct_log_config *));
+    }
+    rv = save_log_config(sconf->static_log_config, cmd->pool, log_id,
+                         public_key, audit_status, url);
+    if (rv != APR_SUCCESS) {
+        return "Error processing static log configuration";
+    }
+
+    return NULL;
+}
+
 static const char *ct_proxy_awareness(cmd_parms *cmd, void *x, const char *arg)
 {
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
@@ -2781,6 +2858,8 @@ static const command_rec ct_cmds[] =
                   "Max age of SCT obtained from log before refresh"),
     AP_INIT_TAKE1("CTLogConfigDB", ct_log_config_db, NULL, RSRC_CONF,
                   "Log configuration database"),
+    AP_INIT_TAKE_ARGV("CTStaticLogConfig", ct_static_log_config, NULL, RSRC_CONF,
+                      "Static log configuration record"),
     AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL, RSRC_CONF,
                   "\"oblivious\" to neither ask for nor check SCTs, "
                   "\"aware\" to ask for and process SCTs but allow all connections, "
