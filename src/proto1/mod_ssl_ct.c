@@ -99,7 +99,7 @@
 #define MAX_LOGLIST_SIZE 1000
 
 typedef struct ct_log_config {
-    const char *log_id;
+    const char *log_id; /* binary form */
     const char *url;
     const char *public_key_pem;
     const char *uri_str;
@@ -1040,9 +1040,30 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
 {
     apr_status_t rv;
     apr_uri_t uri;
+    char *log_id_binary;
     ct_log_config *newconf, **pnewconf;
     int trusted;
     EVP_PKEY *public_key;
+
+    if (log_id) {
+        if (strlen(log_id) != 2 * LOG_ID_SIZE) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "expected 64-character hex log id");
+            return APR_EINVAL;
+        }
+
+        log_id_binary = apr_palloc(p, LOG_ID_SIZE);
+        rv = apr_unescape_hex(log_id_binary, log_id, 2 * LOG_ID_SIZE, 0, NULL);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
+                         "could not unencode hex log id %s",
+                         log_id);
+            return rv;
+        }
+    }
+    else {
+        log_id_binary = NULL;
+    }
 
     if (!audit_status) {
         trusted = TRUSTED_UNSET;
@@ -1080,7 +1101,7 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
     newconf->trusted = trusted;
     newconf->public_key = public_key;
 
-    newconf->log_id = log_id;
+    newconf->log_id = log_id_binary;
     newconf->url = url;
     if (url) {
         newconf->uri = uri;
