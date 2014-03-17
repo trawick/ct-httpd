@@ -98,7 +98,19 @@
  */
 #define MAX_LOGLIST_SIZE 1000
 
+typedef struct ct_log_config {
+    const char *log_id;
+    const char *url;
+    const char *public_key_pem;
+    EVP_PKEY *public_key;
+#define TRUSTED_UNSET      -1
+#define DISTRUSTED          0
+#define TRUSTED             1
+    int trusted;
+} ct_log_config;
+
 typedef struct ct_server_config {
+    apr_array_header_t *log_config;
     apr_array_header_t *log_urls;
     apr_array_header_t *log_url_strs;
     apr_array_header_t *log_public_keys;
@@ -108,7 +120,7 @@ typedef struct ct_server_config {
     const char *audit_storage;
     const char *ct_tools_dir;
     const char *ct_exe;
-    const char *log_config;
+    const char *log_config_fname;
     apr_time_t max_sct_age;
 #define PROXY_AWARENESS_UNSET -1
 #define PROXY_OBLIVIOUS        1
@@ -930,6 +942,101 @@ static int log_config_readable(apr_pool_t *pconf, const char *logconfig)
     return 1;
 }
 
+static apr_status_t public_key_cleanup(void *data)
+{
+    EVP_PKEY *pubkey = data;
+
+    EVP_PKEY_free(pubkey);
+    return APR_SUCCESS;
+}
+
+static apr_status_t read_public_key(apr_pool_t *p, const char *pubkey_fname,
+                                    EVP_PKEY **ppkey)
+{
+    apr_status_t rv;
+    EVP_PKEY *pubkey;
+    FILE *pubkeyf;
+
+    *ppkey = NULL;
+
+    pubkeyf = fopen(pubkey_fname, "r");
+    if (!pubkeyf) {
+        rv = errno; /* Unix-ism! */
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
+                     "could not open log public key file %s",
+                     pubkey_fname);
+        return rv;
+    }
+
+    pubkey = PEM_read_PUBKEY(pubkeyf, NULL, NULL, NULL);
+    if (!pubkey) {
+        fclose(pubkeyf);
+        rv = APR_EINVAL;
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                     "PEM_read_PUBKEY() failed to process public key file %s",
+                     pubkey_fname);
+        return rv;
+    }
+
+    fclose(pubkeyf);
+
+    *ppkey = pubkey;
+
+    apr_pool_cleanup_register(p, (void *)pubkey, public_key_cleanup,
+                              apr_pool_cleanup_null);
+
+    return APR_SUCCESS;
+}
+
+/* The log_config array should have already been allocated from p. */
+static apr_status_t save_log_config(apr_array_header_t *log_config,
+                                    apr_pool_t *p,
+                                    const char *log_id,
+                                    const char *pubkey_fname,
+                                    const char *audit_status,
+                                    const char *url)
+{
+    apr_status_t rv;
+    ct_log_config *newconf, **pnewconf;
+    int trusted;
+    EVP_PKEY *public_key;
+
+    if (!audit_status) {
+        trusted = TRUSTED_UNSET;
+    }
+    else if (!strcasecmp(audit_status, "F")) {
+        trusted = DISTRUSTED;
+    }
+    else if (!strcasecmp(audit_status, "T")) {
+        trusted = TRUSTED;
+    }
+    else {
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                     "Audit status \"%s\" not valid", audit_status);
+        return APR_EINVAL;
+    }
+
+    if (pubkey_fname) {
+        rv = read_public_key(p, pubkey_fname, &public_key);
+        if (rv != APR_SUCCESS) {
+            return rv;
+        }
+    }
+
+    newconf = apr_pcalloc(p, sizeof(ct_log_config));
+    pnewconf = (ct_log_config **)apr_array_push(log_config);
+    *pnewconf = newconf;
+
+    newconf->trusted = trusted;
+    newconf->public_key = public_key;
+
+    newconf->log_id = log_id;
+    newconf->url = url;
+    newconf->public_key_pem = pubkey_fname;
+
+    return APR_SUCCESS;
+}
+
 static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
 {
     apr_status_t rv;
@@ -948,10 +1055,10 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rv = apr_dbd_open(driver, pconf, sconf->log_config, &handle);
+    rv = apr_dbd_open(driver, pconf, sconf->log_config_fname, &handle);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
-                     "Can't open SQLite3 db %s", sconf->log_config);
+                     "Can't open SQLite3 db %s", sconf->log_config_fname);
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -971,13 +1078,13 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
     case -1:
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                      "Unexpected asynchronous result reading %s",
-                     sconf->log_config);
+                     sconf->log_config_fname);
         apr_dbd_close(driver, handle);
         return HTTP_INTERNAL_SERVER_ERROR;
     case 0:
         ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s_main,
                      "Log configuration in %s is empty",
-                     sconf->log_config);
+                     sconf->log_config_fname);
         apr_dbd_close(driver, handle);
         return OK;
     default:
@@ -1001,6 +1108,17 @@ static int read_config_db(apr_pool_t *pconf, server_rec *s_main)
                      public_key ? public_key : "(unset)",
                      audit_status ? audit_status : "(unset, defaults to trusted)",
                      url ? url : "(unset)");
+
+        if (!sconf->log_config) {
+            sconf->log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
+        }
+
+        rv = save_log_config(sconf->log_config, pconf,
+                             log_id, public_key, audit_status, url);
+        if (rv != APR_SUCCESS) {
+            apr_dbd_close(driver, handle);
+            return HTTP_INTERNAL_SERVER_ERROR;
+        }
     }
 
     apr_dbd_close(driver, handle);
@@ -1057,7 +1175,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 #endif /* HAVE_SCT_DAEMON */
 
-    if (sconf->log_config) {
+    if (sconf->log_config_fname) {
         int ret = read_config_db(pconf, s_main);
         if (ret != OK) {
             return ret;
@@ -1095,11 +1213,11 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (sconf->log_config) {
-        if (!log_config_readable(pconf, sconf->log_config)) {
+    if (sconf->log_config_fname) {
+        if (!log_config_readable(pconf, sconf->log_config_fname)) {
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                          "Log config file %s cannot be read",
-                         sconf->log_config);
+                         sconf->log_config_fname);
             return HTTP_INTERNAL_SERVER_ERROR;
         }
     }
@@ -2261,6 +2379,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
     conf->max_sct_age = base->max_sct_age;
+    conf->log_config_fname = base->log_config_fname;
     conf->log_config = base->log_config;
 
     conf->proxy_awareness = (virt->proxy_awareness != PROXY_AWARENESS_UNSET)
@@ -2380,7 +2499,6 @@ static apr_status_t save_log_public_key(apr_pool_t *p, const char *const_lpk_arg
     apr_status_t rv = APR_SUCCESS;
     const char *logid, *pubkey_fname;
     EVP_PKEY *pubkey, **ppkey;
-    FILE *pubkeyf;
     char *lpk_arg = apr_pstrdup(p, const_lpk_arg);
     char *colon = ap_strchr(lpk_arg, ':');
     char **plogid, *logid_binary;
@@ -2409,26 +2527,10 @@ static apr_status_t save_log_public_key(apr_pool_t *p, const char *const_lpk_arg
         return rv;
     }
 
-    pubkeyf = fopen(pubkey_fname, "r");
-    if (!pubkeyf) {
-        rv = errno; /* Unix-ism! */
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
-                     "could not open log public key file %s",
-                     pubkey_fname);
+    rv = read_public_key(p, pubkey_fname, &pubkey);
+    if (rv != APR_SUCCESS) {
         return rv;
     }
-
-    pubkey = PEM_read_PUBKEY(pubkeyf, NULL, NULL, NULL);
-    if (!pubkey) {
-        fclose(pubkeyf);
-        rv = APR_EINVAL;
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
-                     "PEM_read_PUBKEY() failed to process public key file %s",
-                     pubkey_fname);
-        return rv;
-    }
-
-    fclose(pubkeyf);
 
     if (!sconf->log_public_keys) {
         sconf->log_public_keys = apr_array_make(p, 2, sizeof(EVP_PKEY *));
@@ -2599,7 +2701,7 @@ static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }    
 
-static const char *ct_log_config(cmd_parms *cmd, void *x, const char *arg)
+static const char *ct_log_config_db(cmd_parms *cmd, void *x, const char *arg)
 {
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
@@ -2609,7 +2711,7 @@ static const char *ct_log_config(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    sconf->log_config = arg;
+    sconf->log_config_fname = arg;
 
     return NULL;
 }
@@ -2650,7 +2752,7 @@ static const command_rec ct_cmds[] =
                   "Location of certificate-transparency.org tools"),
     AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
                   "Max age of SCT obtained from log before refresh"),
-    AP_INIT_TAKE1("CTLogConfigDB", ct_log_config, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTLogConfigDB", ct_log_config_db, NULL, RSRC_CONF,
                   "Log configuration database"),
     AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL, RSRC_CONF,
                   "\"oblivious\" to neither ask for nor check SCTs, "
