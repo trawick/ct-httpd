@@ -41,24 +41,24 @@ static apr_status_t verify_signature(sct_fields_t *sctf,
 }
 
 apr_status_t sct_verify_signature(conn_rec *c, sct_fields_t *sctf,
-                                  apr_array_header_t *log_public_keys,
-                                  apr_array_header_t *log_ids)
+                                  apr_array_header_t *log_config)
 {
     apr_status_t rv = APR_EINVAL;
     int i;
-    EVP_PKEY **pubkey_elts;
-    char **logid_elts;
-    int nelts = log_public_keys->nelts;
+    ct_log_config **config_elts;
+    int nelts = log_config->nelts;
 
-    ap_assert(log_public_keys->nelts == log_ids->nelts);
     ap_assert(sctf->signed_data != NULL);
 
-    pubkey_elts = (EVP_PKEY **)log_public_keys->elts;
-    logid_elts = (char **)log_ids->elts;
+    config_elts = (ct_log_config **)log_config->elts;
 
     for (i = 0; i < nelts; i++) {
-        EVP_PKEY *pubkey = pubkey_elts[i];
-        char *logid = logid_elts[i];
+        EVP_PKEY *pubkey = config_elts[i]->public_key;
+        const char *logid = config_elts[i]->log_id;
+
+        if (!pubkey || !logid) {
+            continue;
+        }
 
         if (!memcmp(logid, sctf->logid, LOG_ID_SIZE)) {
             rv = verify_signature(sctf, pubkey);

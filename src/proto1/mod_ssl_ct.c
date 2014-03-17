@@ -98,26 +98,9 @@
  */
 #define MAX_LOGLIST_SIZE 1000
 
-typedef struct ct_log_config {
-    const char *log_id; /* binary form */
-    const char *url;
-    const char *public_key_pem;
-    const char *uri_str;
-    apr_uri_t uri;
-    EVP_PKEY *public_key;
-#define TRUSTED_UNSET      -1
-#define DISTRUSTED          0
-#define TRUSTED             1
-    int trusted;
-} ct_log_config;
-
 typedef struct ct_server_config {
     apr_array_header_t *db_log_config;
     apr_array_header_t *static_log_config;
-    apr_array_header_t *log_urls;
-    apr_array_header_t *log_url_strs;
-    apr_array_header_t *log_public_keys;
-    apr_array_header_t *log_ids;
     apr_array_header_t *cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
@@ -506,11 +489,11 @@ static apr_status_t fetch_sct(server_rec *s, apr_pool_t *p,
 }
 
 static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
-                                    const char *listfile, apr_array_header_t *log_urls)
+                                    const char *listfile, apr_array_header_t *log_config)
 {
     apr_file_t *f;
     apr_status_t rv, tmprv;
-    apr_uri_t *log_elts;
+    ct_log_config **config_elts;
     int i;
 
     rv = apr_file_open(&f, listfile,
@@ -523,10 +506,13 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    log_elts  = (apr_uri_t *)log_urls->elts;
+    config_elts  = (ct_log_config **)log_config->elts;
 
-    for (i = 0; i < log_urls->nelts; i++) {
-        rv = apr_file_puts(apr_uri_unparse(p, &log_elts[i], 0), f);
+    for (i = 0; i < log_config->nelts; i++) {
+        if (!config_elts[i]->uri_str) {
+            continue;
+        }
+        rv = apr_file_puts(config_elts[i]->uri_str, f);
         if (rv == APR_SUCCESS) {
             rv = apr_file_puts("\n", f);
         }
@@ -549,10 +535,27 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
     return rv;
 }
 
+static int uri_in_config(const char *needle, const apr_array_header_t *haystack)
+{
+    ct_log_config **elts;
+    int i;
+
+    elts = (ct_log_config **)haystack->elts;
+    for (i = 0; i < haystack->nelts; i++) {
+        if (!elts[i]->uri_str) {
+            continue;
+        }
+        if (!strcmp(needle, elts[i]->uri_str)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
                                              const char *cert_sct_dir,
-                                             apr_array_header_t *log_urls,
-                                             apr_array_header_t *log_url_strs)
+                                             apr_array_header_t *log_config)
 {
     apr_array_header_t *old_urls;
     apr_size_t contents_size;
@@ -586,7 +589,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
 
         elts = (char **)old_urls->elts;
         for (i = 0; i < old_urls->nelts; i++) {
-            if (!ctutil_in_array(elts[i], log_url_strs)) {
+            if (!uri_in_config(elts[i], log_config)) {
                 char *sct_for_log;
                 int exists;
                 apr_uri_t uri;
@@ -657,7 +660,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
     }
 
     if (rv == APR_SUCCESS) {
-        rv = record_log_urls(s, p, listfile, log_urls);
+        rv = record_log_urls(s, p, listfile, log_config);
     }
 
     return rv;
@@ -665,13 +668,12 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
 
 static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
                                           const char *cert_sct_dir,
-                                          apr_array_header_t *log_urls,
-                                          apr_array_header_t *log_url_strs,
+                                          apr_array_header_t *log_config,
                                           const char *ct_exe,
                                           apr_time_t max_sct_age)
 {
     apr_status_t rv;
-    apr_uri_t *log_elts;
+    ct_log_config **config_elts;
     char *cert_fn;
     int i;
 
@@ -680,17 +682,20 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    log_elts  = (apr_uri_t *)log_urls->elts;
+    config_elts  = (ct_log_config **)log_config->elts;
 
-    rv = update_log_list_for_cert(s, p, cert_sct_dir, log_urls, log_url_strs);
+    rv = update_log_list_for_cert(s, p, cert_sct_dir, log_config);
     if (rv != APR_SUCCESS) {
         return rv;
     }
 
-    for (i = 0; i < log_urls->nelts; i++) {
+    for (i = 0; i < log_config->nelts; i++) {
+        if (!config_elts[i]->url) {
+            continue;
+        }
         rv = fetch_sct(s, p, cert_fn,
                        cert_sct_dir,
-                       &log_elts[i],
+                       &config_elts[i]->uri,
                        ct_exe,
                        max_sct_age);
         if (rv != APR_SUCCESS) {
@@ -899,8 +904,7 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
                     apr_hash_set(already_processed, cert_sct_dirs_elts[i],
                                  APR_HASH_KEY_STRING, "done");
                     rv = refresh_scts_for_cert(s_main, p, cert_sct_dirs_elts[i],
-                                               sconf->log_urls,
-                                               sconf->log_url_strs,
+                                               log_config,
                                                sconf->ct_exe,
                                                sconf->max_sct_age);
                     if (rv != APR_SUCCESS) {
@@ -1229,25 +1233,6 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     apr_pool_cleanup_register(pconf, (void *)s_main, ssl_ct_mutex_remove,
                               apr_pool_cleanup_null);
 
-    /* Ensure that we already have, or can fetch, fresh SCTs for each 
-     * certificate.  If so, start the daemon to maintain these and let
-     * startup continue.  (Otherwise abort startup.)
-     */
-
-    rv = refresh_all_scts(s_main, pconf);
-    if (rv != APR_SUCCESS) {
-        return HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-#ifdef HAVE_SCT_DAEMON
-    if (ap_state_query(AP_SQ_MAIN_STATE) != AP_SQ_MS_CREATE_PRE_CONFIG) {
-        int ret = daemon_start(pconf, s_main, procnew);
-        if (ret != OK) {
-            return ret;
-        }
-    }
-#endif /* HAVE_SCT_DAEMON */
-
     if (sconf->log_config_fname) {
         if (!sconf->db_log_config) {
             sconf->db_log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
@@ -1280,6 +1265,25 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                      "No non-empty log configuration was provided");
         return HTTP_INTERNAL_SERVER_ERROR;
     }
+
+    /* Ensure that we already have, or can fetch, fresh SCTs for each 
+     * certificate.  If so, start the daemon to maintain these and let
+     * startup continue.  (Otherwise abort startup.)
+     */
+
+    rv = refresh_all_scts(s_main, pconf);
+    if (rv != APR_SUCCESS) {
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+#ifdef HAVE_SCT_DAEMON
+    if (ap_state_query(AP_SQ_MAIN_STATE) != AP_SQ_MS_CREATE_PRE_CONFIG) {
+        int ret = daemon_start(pconf, s_main, procnew);
+        if (ret != OK) {
+            return ret;
+        }
+    }
+#endif /* HAVE_SCT_DAEMON */
 
     return OK;
 }
@@ -1681,10 +1685,9 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                         verification_failures++;
                     }
 
-                    if (sconf->log_public_keys) {
+                    if (log_config) {
                         tmprv = sct_verify_signature(c, &fields,
-                                                     sconf->log_public_keys,
-                                                     sconf->log_ids);
+                                                     log_config);
                         if (tmprv == APR_NOTFOUND) {
                             ap_log_cerror(APLOG_MARK, APLOG_WARNING, 0, c,
                                           "Server sent SCT from unrecognized log");
@@ -2471,9 +2474,6 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
     conf = (ct_server_config *)apr_pmemdup(p, virt, sizeof(ct_server_config));
 
-    conf->log_urls = base->log_urls;
-    conf->log_public_keys = base->log_public_keys;
-    conf->log_ids = base->log_ids;
     conf->sct_storage = base->sct_storage;
     conf->audit_storage = base->audit_storage;
     conf->ct_tools_dir = base->ct_tools_dir;
@@ -2554,126 +2554,6 @@ static void ct_register_hooks(apr_pool_t *p)
                      NULL, NULL, APR_HOOK_MIDDLE);
     AP_OPTIONAL_HOOK(ssl_proxy_post_handshake, ssl_ct_ssl_proxy_post_handshake,
                      NULL, NULL, APR_HOOK_MIDDLE);
-}
-
-static apr_status_t save_log_public_key(apr_pool_t *p, const char *const_lpk_arg,
-                                        ct_server_config *sconf)
-{
-    apr_status_t rv = APR_SUCCESS;
-    const char *logid, *pubkey_fname;
-    EVP_PKEY *pubkey, **ppkey;
-    char *lpk_arg = apr_pstrdup(p, const_lpk_arg);
-    char *colon = ap_strchr(lpk_arg, ':');
-    char **plogid, *logid_binary;
-
-    if (!colon) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
-                     "expected <logid>:pubkey-file");
-        return APR_EINVAL;
-    }
-
-    pubkey_fname = colon + 1;
-    logid = lpk_arg;
-    *colon = '\0';
-
-    if (strlen(logid) != 2 * LOG_ID_SIZE) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
-                     "expected 64-character hex log id");
-    }
-
-    logid_binary = apr_palloc(p, LOG_ID_SIZE);
-    rv = apr_unescape_hex(logid_binary, logid, 2 * LOG_ID_SIZE, 0, NULL);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
-                     "could not unencode hex log id %s",
-                     logid);
-        return rv;
-    }
-
-    rv = read_public_key(p, pubkey_fname, &pubkey);
-    if (rv != APR_SUCCESS) {
-        return rv;
-    }
-
-    if (!sconf->log_public_keys) {
-        sconf->log_public_keys = apr_array_make(p, 2, sizeof(EVP_PKEY *));
-        sconf->log_ids = apr_array_make(p, 2, sizeof(char *));
-    }
-    ppkey = (EVP_PKEY **)apr_array_push(sconf->log_public_keys);
-    *ppkey = pubkey;
-
-    plogid = (char **)apr_array_push(sconf->log_ids);
-    *plogid = logid_binary;
-
-    return rv;
-}
-
-static const char *ct_logs(cmd_parms *cmd, void *x, int argc, char *const argv[])
-{
-    int i;
-    apr_status_t rv;
-    apr_uri_t uri, *puri;
-    char **pstr;
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-
-    if (err) {
-        return err;
-    }
-
-    if (argc < 1) {
-        return "CTLogs: At least one log URL must be provided";
-    }
-
-    for (i = 0; i < argc; i++) {
-        if (!sconf->log_urls) {
-            sconf->log_urls = apr_array_make(cmd->pool, 2, sizeof(uri));
-            sconf->log_url_strs = apr_array_make(cmd->pool, 2, sizeof(char *));
-        }
-        rv = parse_log_url(cmd->pool, argv[i], &uri);
-        if (rv) {
-            return apr_psprintf(cmd->pool, "CTLogs: Error with log URL %s: (%d)%pm",
-                                argv[i], rv, &rv);
-        }
-        else {
-            puri = (apr_uri_t *)apr_array_push(sconf->log_urls);
-            *puri = uri;
-            pstr = (char **)apr_array_push(sconf->log_url_strs);
-            *pstr = apr_uri_unparse(cmd->pool, &uri, 0);
-        }
-    }
-
-    return NULL;
-}
-
-static const char *ct_log_pubkeys(cmd_parms *cmd, void *x, int argc,
-                                  char *const argv[])
-{
-    int i;
-    apr_status_t rv;
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-
-    if (err) {
-        return err;
-    }
-
-    if (argc < 1) {
-        return "CTLogPublicKeys: At least one public key must be provided";
-    }
-
-    for (i = 0; i < argc; i++) {
-        rv = save_log_public_key(cmd->pool, argv[i], sconf);
-        if (rv) {
-            return apr_psprintf(cmd->pool, "CTLogPublicKeys: Error with log id/URL "
-                                "%s: (%d)%pm",
-                                argv[i], rv, &rv);
-        }
-    }
-
-    return NULL;
 }
 
 static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
@@ -2867,10 +2747,6 @@ static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
                   "Location to store files of audit data"),
-    AP_INIT_TAKE_ARGV("CTLogs", ct_logs, NULL, RSRC_CONF,
-                      "List of Certificate Transparency Log URLs"),
-    AP_INIT_TAKE_ARGV("CTLogPublicKeys", ct_log_pubkeys, NULL, RSRC_CONF,
-                      "List of Certificate Transparency Log public keys"),
     AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
                   "Location to store SCTs obtained from logs"),
     AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
