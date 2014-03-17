@@ -929,7 +929,8 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
     return rv;
 }
 
-static int log_config_readable(apr_pool_t *pconf, const char *logconfig)
+static int log_config_readable(apr_pool_t *pconf, const char *logconfig,
+                               const char **msg)
 {
     const apr_dbd_driver_t *driver;
     apr_dbd_t *handle;
@@ -939,6 +940,9 @@ static int log_config_readable(apr_pool_t *pconf, const char *logconfig)
 
     rv = apr_dbd_get_driver(pconf, "sqlite3", &driver);
     if (rv != APR_SUCCESS) {
+        if (msg) {
+            *msg = "SQLite3 driver cannot be loaded";
+        }
         return 0;
     }
 
@@ -1326,10 +1330,15 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 
     if (sconf->log_config_fname) {
-        if (!log_config_readable(pconf, sconf->log_config_fname)) {
+        const char *msg = NULL;
+        if (!log_config_readable(pconf, sconf->log_config_fname, &msg)) {
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
                          "Log config file %s cannot be read",
                          sconf->log_config_fname);
+            if (msg) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                            "%s", msg);
+            }
             return HTTP_INTERNAL_SERVER_ERROR;
         }
     }
