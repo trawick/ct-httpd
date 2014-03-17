@@ -44,14 +44,16 @@ what looks like a build nightmare.
 * Configure mod\_ssl\_ct like this:
 ```
     LoadModule ssl_ct_module modules/mod_ssl_ct.so
-    CTLogs http://localhost:8888/ http://otherhost:9999/
+    CTStaticLogConfig - - - http://localhost:8888/
+    CTStaticLogConfig - - - http://otherhost:9999/
+    CTStaticLogConfig <32-byte log id in hex> /path/to/log-public-key.pem - -
     CTAuditStorage /tmp/audit
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
     CTMaxSCTAge 3600 # 1 hour
-    CTLogPublicKeys <32-byte log id in hex>:/path/to/log-public-key.pem ...
 ```
 * If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate under CTSCTStorage.  (The SHA1 digest of the server certificate is the directory name.)
+* You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.
 * The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
 
 ### Support for off-line auditing of SCTs received by the proxy from servers
