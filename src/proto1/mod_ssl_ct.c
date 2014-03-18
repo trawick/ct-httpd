@@ -18,7 +18,6 @@
  * Issues
  *
  * + Major limitations
- *   . need to allow on-line (possibly automated) configuration of trusted logs
  *   . need to ensure that audit data is written in a way that audit can be
  *     performed
  *
