@@ -23,6 +23,8 @@
 #include "httpd.h"
 #include "ssl_hooks.h"
 
+#include "ssl_ct_log_config.h"
+
 #define LOG_ID_SIZE 32
 
 typedef struct cert_chain {
@@ -53,19 +55,6 @@ apr_status_t sct_parse(const char *source,
                        sct_fields_t *fields);
 
 void sct_release(sct_fields_t *sctf);
-
-typedef struct ct_log_config {
-    const char *log_id; /* binary form */
-    const char *url;
-    const char *public_key_pem;
-    const char *uri_str;
-    apr_uri_t uri;
-    EVP_PKEY *public_key;
-#define TRUSTED_UNSET      -1
-#define DISTRUSTED          0
-#define TRUSTED             1
-    int trusted;
-} ct_log_config;
 
 apr_status_t sct_verify_signature(conn_rec *c, sct_fields_t *sctf,
                                   apr_array_header_t *log_config);

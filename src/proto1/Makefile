@@ -4,15 +4,17 @@ APXS = $(INST)/bin/apxs
 SSLSRC = $(HOME)/svn/httpd-ct/modules/ssl
 OPENSSLINST = $(HOME)/inst/o102
 
-SOURCES = mod_ssl_ct.c ssl_ct_sct.h ssl_ct_sct.c ssl_ct_util.h ssl_ct_util.c Makefile *.py
+DOTC = mod_ssl_ct.c ssl_ct_sct.c ssl_ct_util.c ssl_ct_log_config.c
+DOTH = ssl_ct_sct.h ssl_ct_util.h ssl_ct_log_config.h
+SOURCES = $(DOTC) $(DOTH) Makefile *.py
 
 all: mod_ssl_ct.la
 
 clean:
 	rm -rf *.la *.lo *.o *.slo .libs
 
-mod_ssl_ct.la: mod_ssl_ct.c ssl_ct_sct.h ssl_ct_sct.c ssl_ct_util.c ssl_ct_util.h
-	$(APXS) -c -I$(SSLSRC) -I$(OPENSSLINST)/include mod_ssl_ct.c ssl_ct_sct.c ssl_ct_util.c
+mod_ssl_ct.la: $(DOTC) $(DOTH)
+	$(APXS) -c -I$(SSLSRC) -I$(OPENSSLINST)/include $(DOTC)
 
 install: mod_ssl_ct.la stop pure-install
 
@@ -38,7 +40,3 @@ config:
 	python conf.py ssl_ct $(INST)
 	$(APACHECTL) -t
 	$(APACHECTL) -M | grep ssl_ct
-
-metrics:
-	@echo $(TS) $(LINES) >> metrics.txt
-	cat metrics.txt
