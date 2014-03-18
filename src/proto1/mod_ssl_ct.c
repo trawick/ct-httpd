@@ -1188,11 +1188,11 @@ static apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
     for (rv = apr_dbd_get_row(driver, p, res, &row, -1);
          rv == APR_SUCCESS;
          rv = apr_dbd_get_row(driver, p, res, &row, -1)) {
-        const char *id = apr_dbd_get_entry(driver, row, 0);
-        /* const char *unused_log_id = apr_dbd_get_entry(driver, row, 1); */
-        const char *public_key = apr_dbd_get_entry(driver, row, 2);
-        const char *audit_status = apr_dbd_get_entry(driver, row, 3);
-        const char *url = apr_dbd_get_entry(driver, row, 4);
+        int cur = 0;
+        const char *id = apr_dbd_get_entry(driver, row, cur++);
+        const char *public_key = apr_dbd_get_entry(driver, row, cur++);
+        const char *audit_status = apr_dbd_get_entry(driver, row, cur++);
+        const char *url = apr_dbd_get_entry(driver, row, cur++);
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                      "Log config: Record %s, public key file %s, audit status %s, URL %s",
