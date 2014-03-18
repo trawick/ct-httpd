@@ -49,6 +49,7 @@
 #include "apr_global_mutex.h"
 #include "apr_signal.h"
 #include "apr_strings.h"
+#include "apr_thread_rwlock.h"
 
 #include "apr_dbd.h"
 
@@ -168,6 +169,7 @@ static apr_file_t *audit_file;
 static int audit_file_nonempty;
 static apr_thread_mutex_t *audit_file_mutex;
 static apr_thread_mutex_t *cached_server_data_mutex;
+static apr_thread_rwlock_t *log_config_rwlock;
 
 #ifdef HAVE_SCT_DAEMON
 
@@ -725,8 +727,11 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
 static void *run_service_thread(apr_thread_t *me, void *data)
 {
     server_rec *s = data;
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
     int mpmq_s;
     apr_status_t rv;
+    int count = 0;
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                  SERVICE_THREAD_NAME " started");
@@ -739,6 +744,32 @@ static void *run_service_thread(apr_thread_t *me, void *data)
             break;
         }
         apr_sleep(apr_time_from_sec(1));
+        if (++count >= 30) {
+            count = 0;
+            if (sconf->db_log_config) {
+                /* Reload log config DB */
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                             SERVICE_THREAD_NAME " - reloading config");
+                ap_assert(apr_thread_rwlock_wrlock(log_config_rwlock) == 0);
+                active_log_config = NULL;
+                apr_pool_clear(sconf->db_log_config_pool);
+                sconf->db_log_config =
+                    apr_array_make(sconf->db_log_config_pool, 2,
+                                   sizeof(ct_log_config *));
+                rv = read_config_db(sconf->db_log_config_pool,
+                                    s, sconf->log_config_fname,
+                                    sconf->db_log_config);
+                ap_assert(apr_thread_rwlock_unlock(log_config_rwlock) == 0);
+                if (rv != APR_SUCCESS) {
+                    ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
+                                 SERVICE_THREAD_NAME " - no active configuration until "
+                                 "log config DB is corrected");
+                }
+                else {
+                    active_log_config = sconf->db_log_config;
+                }
+            }
+        }
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, rv, s,
@@ -1446,8 +1477,15 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                     }
 
                     if (active_log_config) {
+                        /* will only block if we have a DB-based log
+                         * configuration which is currently being refreshed
+                         */
+                        ap_assert(apr_thread_rwlock_rdlock(log_config_rwlock)
+                                  == APR_SUCCESS);
                         tmprv = sct_verify_signature(c, &fields,
                                                      active_log_config);
+                        ap_assert(apr_thread_rwlock_unlock(log_config_rwlock)
+                                  == APR_SUCCESS);
                         if (tmprv == APR_NOTFOUND) {
                             ap_log_cerror(APLOG_MARK, APLOG_WARNING, 0, c,
                                           "Server sent SCT from unrecognized log");
@@ -2138,6 +2176,13 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
         /* might crash otherwise due to lack of checking for initialized data
          * in all the right places, but this is going to skip pchild cleanup
          */
+        exit(APEXIT_CHILDSICK);
+    }
+
+    rv = apr_thread_rwlock_create(&log_config_rwlock, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                     "could not create rwlock in child");
         exit(APEXIT_CHILDSICK);
     }
 
