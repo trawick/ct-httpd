@@ -5,8 +5,8 @@ import sqlite3
 import sys
 
 
-def create_tables(dbname):
-    cxn = sqlite3.connect(dbname)
+def create_tables(db_name):
+    cxn = sqlite3.connect(db_name)
     cur = cxn.cursor()
 
     cur.execute('CREATE TABLE loginfo('
@@ -147,38 +147,42 @@ def usage():
     sys.exit(1)
 
 
-if len(sys.argv) < 3:
-    usage()
+def main():
+    if len(sys.argv) < 3:
+        usage()
 
-dbname = sys.argv[1]
-cmd = sys.argv[2]
-args = sys.argv[3:]
+    db_name = sys.argv[1]
+    cmd = sys.argv[2]
+    args = sys.argv[3:]
 
-cmds = {'configure-public-key': configure_public_key,
-        'configure-url': configure_url,
-        'distrust': distrust_log,
-        'trust': trust_log,
-        'forget': forget_log,
-        'dump': dump,
-    }
+    cmds = {'configure-public-key': configure_public_key,
+            'configure-url': configure_url,
+            'distrust': distrust_log,
+            'trust': trust_log,
+            'forget': forget_log,
+            'dump': dump,
+        }
 
-cmds_requiring_db = ['dump', 'forget']  # db must already exist
+    cmds_requiring_db = ['dump', 'forget']  # db must already exist
 
-if not cmd in cmds:
-    usage()
+    if not cmd in cmds:
+        usage()
 
-if not os.path.exists(dbname):
-    if not cmd in cmds_requiring_db:
-        create_tables(dbname)
-    else:
-        print >> sys.stderr, 'Database "%s" does not exist' % dbname
-        sys.exit(1)
+    if not os.path.exists(db_name):
+        if not cmd in cmds_requiring_db:
+            create_tables(db_name)
+        else:
+            print >> sys.stderr, 'Database "%s" does not exist' % db_name
+            sys.exit(1)
 
-cxn = sqlite3.connect(dbname)
-cur = cxn.cursor()
+    cxn = sqlite3.connect(db_name)
+    cur = cxn.cursor()
 
-cmds[cmd](cur, args)
+    cmds[cmd](cur, args)
 
-cur.close()
-cxn.commit()
-cxn.close()
+    cur.close()
+    cxn.commit()
+    cxn.close()
+
+if __name__ == "__main__":
+    main()
