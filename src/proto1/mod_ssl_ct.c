@@ -1011,6 +1011,22 @@ static apr_status_t read_public_key(apr_pool_t *p, const char *pubkey_fname,
     return APR_SUCCESS;
 }
 
+static void digest_public_key(EVP_PKEY *pubkey, unsigned char digest[LOG_ID_SIZE])
+{
+    int len = i2d_PUBKEY(pubkey, NULL);
+    unsigned char *val = malloc(len);
+    unsigned char *tmp = val;
+    SHA256_CTX sha256ctx;
+
+    ap_assert(LOG_ID_SIZE == SHA256_DIGEST_LENGTH);
+
+    i2d_PUBKEY(pubkey, &tmp);
+    SHA256_Init(&sha256ctx);
+    SHA256_Update(&sha256ctx, (unsigned char *)val, len);
+    SHA256_Final(digest, &sha256ctx);
+    free(val);
+}
+
 static apr_status_t parse_log_url(apr_pool_t *p, const char *lu, apr_uri_t *puri)
 {
     apr_status_t rv;
@@ -1050,37 +1066,15 @@ static apr_status_t parse_log_url(apr_pool_t *p, const char *lu, apr_uri_t *puri
 /* The log_config array should have already been allocated from p. */
 static apr_status_t save_log_config(apr_array_header_t *log_config,
                                     apr_pool_t *p,
-                                    const char *log_id,
                                     const char *pubkey_fname,
                                     const char *audit_status,
                                     const char *url)
 {
     apr_status_t rv;
     apr_uri_t uri;
-    char *log_id_binary;
     ct_log_config *newconf, **pnewconf;
     int trusted;
     EVP_PKEY *public_key;
-
-    if (log_id) {
-        if (strlen(log_id) != 2 * LOG_ID_SIZE) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
-                         "expected 64-character hex log id");
-            return APR_EINVAL;
-        }
-
-        log_id_binary = apr_palloc(p, LOG_ID_SIZE);
-        rv = apr_unescape_hex(log_id_binary, log_id, 2 * LOG_ID_SIZE, 0, NULL);
-        if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
-                         "could not unencode hex log id %s",
-                         log_id);
-            return rv;
-        }
-    }
-    else {
-        log_id_binary = NULL;
-    }
 
     if (!audit_status) {
         trusted = TRUSTED_UNSET;
@@ -1118,7 +1112,12 @@ static apr_status_t save_log_config(apr_array_header_t *log_config,
     newconf->trusted = trusted;
     newconf->public_key = public_key;
 
-    newconf->log_id = log_id_binary;
+    if (newconf->public_key) {
+        newconf->log_id = apr_palloc(p, LOG_ID_SIZE);
+        digest_public_key(newconf->public_key,
+                          (unsigned char *)newconf->log_id);
+    }
+
     newconf->url = url;
     if (url) {
         newconf->uri = uri;
@@ -1190,21 +1189,20 @@ static apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
          rv == APR_SUCCESS;
          rv = apr_dbd_get_row(driver, p, res, &row, -1)) {
         const char *id = apr_dbd_get_entry(driver, row, 0);
-        const char *log_id = apr_dbd_get_entry(driver, row, 1);
+        /* const char *unused_log_id = apr_dbd_get_entry(driver, row, 1); */
         const char *public_key = apr_dbd_get_entry(driver, row, 2);
         const char *audit_status = apr_dbd_get_entry(driver, row, 3);
         const char *url = apr_dbd_get_entry(driver, row, 4);
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                     "Log config: Record %s, id %s, public key file %s, audit status %s, URL %s",
+                     "Log config: Record %s, public key file %s, audit status %s, URL %s",
                      id,
-                     log_id,
                      public_key ? public_key : "(unset)",
                      audit_status ? audit_status : "(unset, defaults to trusted)",
                      url ? url : "(unset)");
 
         rv = save_log_config(log_config, p,
-                             log_id, public_key, audit_status, url);
+                             public_key, audit_status, url);
         if (rv != APR_SUCCESS) {
             apr_dbd_close(driver, handle);
             return rv;
@@ -2694,34 +2692,31 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
 {
     apr_status_t rv;
     const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-    const char *log_id, *public_key, *audit_status, *url;
+    const char *public_key, *audit_status, *url;
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
+    int cur_arg;
 
     if (err) {
         return err;
     }
 
-    if (argc != 4) {
-        return "CTStaticLogConfig: 4 arguments are required";
+    if (argc != 3) {
+        return "CTStaticLogConfig: 3 arguments are required";
     }
 
-    log_id = argv[0];
-    if (!strcmp(log_id, "-")) {
-        log_id = NULL;
-    }
-
-    public_key = argv[1];
+    cur_arg = 0;
+    public_key = argv[cur_arg++];
     if (!strcmp(public_key, "-")) {
         public_key = NULL;
     }
     
-    audit_status = argv[2];
+    audit_status = argv[cur_arg++];
     if (!strcmp(audit_status, "-")) {
         audit_status = NULL;
     }
 
-    url = argv[3];
+    url = argv[cur_arg++];
     if (!strcmp(url, "-")) {
         url = NULL;
     }
@@ -2730,7 +2725,7 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
         sconf->static_log_config =
             apr_array_make(cmd->pool, 2, sizeof(ct_log_config *));
     }
-    rv = save_log_config(sconf->static_log_config, cmd->pool, log_id,
+    rv = save_log_config(sconf->static_log_config, cmd->pool,
                          public_key, audit_status, url);
     if (rv != APR_SUCCESS) {
         return "Error processing static log configuration";

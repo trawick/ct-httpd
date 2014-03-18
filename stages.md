@@ -44,9 +44,9 @@ what looks like a build nightmare.
 * Configure mod\_ssl\_ct like this:
 ```
     LoadModule ssl_ct_module modules/mod_ssl_ct.so
-    CTStaticLogConfig - - - http://localhost:8888/
-    CTStaticLogConfig - - - http://otherhost:9999/
-    CTStaticLogConfig <32-byte log id in hex> /path/to/log-public-key.pem - -
+    CTStaticLogConfig - - http://localhost:8888/
+    CTStaticLogConfig - - http://otherhost:9999/
+    CTStaticLogConfig /path/to/log-public-key.pem - -
     CTAuditStorage /tmp/audit
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
