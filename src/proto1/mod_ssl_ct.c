@@ -148,7 +148,7 @@ typedef struct ct_cached_server_data {
 } ct_cached_server_data;
 
 /* the log configuration in use -- either db_log_config or static_log_config */
-static apr_array_header_t *log_config;
+static apr_array_header_t *active_log_config;
 
 module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
@@ -847,7 +847,7 @@ static int sct_daemon(server_rec *s_main)
             ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                          DAEMON_NAME " - reloading config");
             apr_pool_clear(sconf->db_log_config_pool);
-            log_config = NULL;
+            active_log_config = NULL;
             sconf->db_log_config =
                 apr_array_make(sconf->db_log_config_pool, 2,
                                sizeof(ct_log_config *));
@@ -860,11 +860,11 @@ static int sct_daemon(server_rec *s_main)
                              "log config DB is corrected");
                 continue;
             }
-            log_config = sconf->db_log_config;
+            active_log_config = sconf->db_log_config;
         }
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                      DAEMON_NAME " - refreshing SCTs as needed");
-        rv = refresh_all_scts(s_main, ptemp, log_config);
+        rv = refresh_all_scts(s_main, ptemp, active_log_config);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
                          DAEMON_NAME " - SCT refresh failed; will try again later");
@@ -1010,10 +1010,10 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 
     if (sconf->static_log_config && sconf->static_log_config->nelts > 0) {
-        log_config = sconf->static_log_config;
+        active_log_config = sconf->static_log_config;
     }
     else if (sconf->db_log_config && sconf->db_log_config->nelts > 0) {
-        log_config = sconf->db_log_config;
+        active_log_config = sconf->db_log_config;
     }
     else {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
@@ -1026,7 +1026,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
      * startup continue.  (Otherwise abort startup.)
      */
 
-    rv = refresh_all_scts(s_main, pconf, log_config);
+    rv = refresh_all_scts(s_main, pconf, active_log_config);
     if (rv != APR_SUCCESS) {
         return HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -1445,9 +1445,9 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
                         verification_failures++;
                     }
 
-                    if (log_config) {
+                    if (active_log_config) {
                         tmprv = sct_verify_signature(c, &fields,
-                                                     log_config);
+                                                     active_log_config);
                         if (tmprv == APR_NOTFOUND) {
                             ap_log_cerror(APLOG_MARK, APLOG_WARNING, 0, c,
                                           "Server sent SCT from unrecognized log");
