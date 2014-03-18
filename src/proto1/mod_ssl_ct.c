@@ -156,7 +156,8 @@ module AP_MODULE_DECLARE_DATA ssl_ct_module;
 
 static apr_global_mutex_t *ssl_ct_sct_update;
 
-static int refresh_all_scts(server_rec *s_main, apr_pool_t *p);
+static int refresh_all_scts(server_rec *s_main, apr_pool_t *p,
+                            apr_array_header_t *log_config);
 
 static apr_thread_t *service_thread;
 
@@ -819,6 +820,8 @@ static int sct_daemon(server_rec *s_main)
 {
     apr_status_t rv;
     apr_pool_t *ptemp;
+    ct_server_config *sconf = ap_get_module_config(s_main->module_config,
+                                                   &ssl_ct_module);
 
     /* Ignoring SIGCHLD results in errno ECHILD returned from apr_proc_wait().
      * apr_signal(SIGCHLD, SIG_IGN);
@@ -840,9 +843,28 @@ static int sct_daemon(server_rec *s_main)
     while (!daemon_should_exit) {
         apr_sleep(apr_time_from_sec(30)); /* SIGHUP at restart/stop will break out */
 
+        if (sconf->db_log_config) { /* not using static config */
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                         DAEMON_NAME " - reloading config");
+            apr_pool_clear(sconf->db_log_config_pool);
+            log_config = NULL;
+            sconf->db_log_config =
+                apr_array_make(sconf->db_log_config_pool, 2,
+                               sizeof(ct_log_config *));
+            rv = read_config_db(sconf->db_log_config_pool,
+                                s_main, sconf->log_config_fname,
+                                sconf->db_log_config);
+            if (rv != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s_main,
+                             DAEMON_NAME " - no active configuration until "
+                             "log config DB is corrected");
+                continue;
+            }
+            log_config = sconf->db_log_config;
+        }
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                      DAEMON_NAME " - refreshing SCTs as needed");
-        rv = refresh_all_scts(s_main, ptemp);
+        rv = refresh_all_scts(s_main, ptemp, log_config);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
                          DAEMON_NAME " - SCT refresh failed; will try again later");
@@ -888,7 +910,8 @@ static apr_status_t ssl_ct_mutex_remove(void *data)
     return APR_SUCCESS;
 }
 
-static int refresh_all_scts(server_rec *s_main, apr_pool_t *p)
+static int refresh_all_scts(server_rec *s_main, apr_pool_t *p,
+                            apr_array_header_t *log_config)
 {
     apr_hash_t *already_processed;
     apr_status_t rv;
@@ -962,7 +985,8 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 
     if (sconf->log_config_fname) {
         if (!sconf->db_log_config) {
-            sconf->db_log_config_pool = pconf;
+            /* log config db in separate pool that can be cleared */
+            apr_pool_create(&sconf->db_log_config_pool, pconf);
             sconf->db_log_config =
                 apr_array_make(sconf->db_log_config_pool, 2,
                                sizeof(ct_log_config *));
@@ -1002,7 +1026,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
      * startup continue.  (Otherwise abort startup.)
      */
 
-    rv = refresh_all_scts(s_main, pconf);
+    rv = refresh_all_scts(s_main, pconf, log_config);
     if (rv != APR_SUCCESS) {
         return HTTP_INTERNAL_SERVER_ERROR;
     }
