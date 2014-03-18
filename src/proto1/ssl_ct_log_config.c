@@ -23,7 +23,7 @@
 #include "ssl_ct_sct.h"
 #include "ssl_ct_log_config.h"
 
-int log_config_readable(apr_pool_t *pconf, const char *logconfig,
+int log_config_readable(apr_pool_t *p, const char *logconfig,
                         const char **msg)
 {
     const apr_dbd_driver_t *driver;
@@ -32,7 +32,7 @@ int log_config_readable(apr_pool_t *pconf, const char *logconfig,
     apr_dbd_results_t *res;
     int rc;
 
-    rv = apr_dbd_get_driver(pconf, "sqlite3", &driver);
+    rv = apr_dbd_get_driver(p, "sqlite3", &driver);
     if (rv != APR_SUCCESS) {
         if (msg) {
             *msg = "SQLite3 driver cannot be loaded";
@@ -40,14 +40,14 @@ int log_config_readable(apr_pool_t *pconf, const char *logconfig,
         return 0;
     }
 
-    rv = apr_dbd_open(driver, pconf, logconfig, &handle);
+    rv = apr_dbd_open(driver, p, logconfig, &handle);
     if (rv != APR_SUCCESS) {
         return 0;
     }
 
     /* is there a cheaper way? */
     res = NULL;
-    rc = apr_dbd_select(driver, pconf, handle, &res,
+    rc = apr_dbd_select(driver, p, handle, &res,
                         "SELECT * FROM loginfo WHERE id = 0", 0);
 
     apr_dbd_close(driver, handle);
@@ -158,11 +158,11 @@ static apr_status_t parse_log_url(apr_pool_t *p, const char *lu, apr_uri_t *puri
 }
 
 /* The log_config array should have already been allocated from p. */
-apr_status_t save_log_config(apr_array_header_t *log_config,
-                             apr_pool_t *p,
-                             const char *pubkey_fname,
-                             const char *audit_status,
-                             const char *url)
+apr_status_t save_log_config_entry(apr_array_header_t *log_config,
+                                   apr_pool_t *p,
+                                   const char *pubkey_fname,
+                                   const char *audit_status,
+                                   const char *url)
 {
     apr_status_t rv;
     apr_uri_t uri;
@@ -295,8 +295,8 @@ apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
                      audit_status ? audit_status : "(unset, defaults to trusted)",
                      url ? url : "(unset)");
 
-        rv = save_log_config(log_config, p,
-                             public_key, audit_status, url);
+        rv = save_log_config_entry(log_config, p,
+                                   public_key, audit_status, url);
         if (rv != APR_SUCCESS) {
             apr_dbd_close(driver, handle);
             return rv;

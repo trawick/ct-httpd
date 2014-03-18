@@ -100,6 +100,7 @@
 
 typedef struct ct_server_config {
     apr_array_header_t *db_log_config;
+    apr_pool_t *db_log_config_pool;
     apr_array_header_t *static_log_config;
     apr_array_header_t *cert_sct_dirs;
     const char *sct_storage;
@@ -961,10 +962,14 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 
     if (sconf->log_config_fname) {
         if (!sconf->db_log_config) {
-            sconf->db_log_config = apr_array_make(pconf, 2, sizeof(ct_log_config *));
+            sconf->db_log_config_pool = pconf;
+            sconf->db_log_config =
+                apr_array_make(sconf->db_log_config_pool, 2,
+                               sizeof(ct_log_config *));
         }
-        rv = read_config_db(pconf, s_main, sconf->log_config_fname,
-                             sconf->db_log_config);
+        rv = read_config_db(sconf->db_log_config_pool,
+                            s_main, sconf->log_config_fname,
+                            sconf->db_log_config);
         if (rv != APR_SUCCESS) {
             return HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -2440,8 +2445,8 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
         sconf->static_log_config =
             apr_array_make(cmd->pool, 2, sizeof(ct_log_config *));
     }
-    rv = save_log_config(sconf->static_log_config, cmd->pool,
-                         public_key, audit_status, url);
+    rv = save_log_config_entry(sconf->static_log_config, cmd->pool,
+                               public_key, audit_status, url);
     if (rv != APR_SUCCESS) {
         return "Error processing static log configuration";
     }

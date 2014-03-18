@@ -33,17 +33,17 @@ typedef struct ct_log_config {
     int trusted;
 } ct_log_config;
 
-int log_config_readable(apr_pool_t *pconf, const char *logconfig,
+int log_config_readable(apr_pool_t *p, const char *logconfig,
                         const char **msg);
 
 apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
                             const char *log_config_fname,
                             apr_array_header_t *log_config);
 
-apr_status_t save_log_config(apr_array_header_t *log_config,
-                             apr_pool_t *p,
-                             const char *pubkey_fname,
-                             const char *audit_status,
-                             const char *url);
+apr_status_t save_log_config_entry(apr_array_header_t *log_config,
+                                   apr_pool_t *p,
+                                   const char *pubkey_fname,
+                                   const char *audit_status,
+                                   const char *url);
 
 #endif /* SSL_CT_LOG_CONFIG_H */
