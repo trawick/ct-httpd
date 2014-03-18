@@ -34,12 +34,12 @@ what looks like a build nightmare.
 ### Use it like this:
 
 * Build OpenSSL 1.0.2-beta1
-* Patch httpd trunk with src/proto1/httpd.patch (using OpenSSL 1.0.2-beta1)
+* Patch httpd trunk with src/proto1/httpd.patch (which has to be built using OpenSSL 1.0.2-beta1)
 * If you want to store CT log configuration in a database, which will allow dynamic updates in the future, use a build of APR-Util with SQLite3 database support (--with-sqlite3) **and** use CTLogConfigDB instead of CTStaticLogConfig.
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
 ```
-    apxs -ci -I/path/to/httpd/modules/ssl -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_util.c ssl_ct_sct.c
+    apxs -ci -I/path/to/httpd/modules/ssl -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_util.c ssl_ct_sct.c ssl_ct_log_config.c
 ```
 * Configure mod\_ssl\_ct like this:
 ```
