@@ -56,6 +56,10 @@ apr_status_t ctutil_file_write_uint16(server_rec *s,
                                       apr_file_t *f,
                                       apr_uint16_t val);
 
+apr_status_t ctutil_file_write_uint24(server_rec *s,
+                                      apr_file_t *f,
+                                      apr_uint32_t val);
+
 void ctutil_log_array(const char *file, int line, int module_index,
                       int level, server_rec *s, const char *desc,
                       apr_array_header_t *arr);

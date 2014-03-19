@@ -59,11 +59,11 @@ what looks like a build nightmare.
 ### Support for off-line auditing of SCTs received by the proxy from servers
 
 * httpd processes queue the server certificate chain and SCTs in a file called audit\_\<PID\>.tmp in the CTAuditStorage directory.  These are flushed and renamed to audit\_\<PID\>.out when the child process exits (MaxConnectionsPerChild, load subsides, restart, stop).
-* The individual files for audit, specific t one httpd child process, will not have duplicates (i.e., multiple occurrences of the exact same server certificate/chain and set of SCTs), though there can be duplicates among multiple files.
-* The off-line audit procedure should move the .out files elsewhere and audit the contents.  These .out files will grow nbounded for the life of the server!
+* The individual files for audit, specific to one httpd child process, will not have duplicates (i.e., multiple occurrences of the exact same server certificate/chain and set of SCTs), though there can be duplicates among files for different httpd child processes.
+* The off-line audit procedure should move the .out files elsewhere and audit the contents.  These .out files will grow unbounded for the life of the server if the set of unique server certificates + SCTs is unbounded.
 * No provision is made for unbounded storage growth due to unbounded numbers of backend servers or unbounded numbers of child processes (each with its own .out file).
 * The file contains a series of elements for each server: SERVER_START (0x0001), certificate data (leaf first followed by any intermediate certificates), and SCT data.
-* Each certificate is represented by CERT_START (0x0002) and two-byte length followed by the certificate in DER.
+* Each certificate is represented by CERT_START (0x0002) and three-byte length followed by the certificate in DER.
 * Each SCT is represented by SCT_START (0x0003) and two-byte length followed by the SCT.
 
 ### Support for logging what happened

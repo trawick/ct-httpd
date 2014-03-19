@@ -1576,7 +1576,7 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
                     der_length = i2d_X509(x509elts[i], &der_buf);
                     ap_assert(der_length > 0);
 
-                    rv = ctutil_file_write_uint16(s, audit_file, der_length);
+                    rv = ctutil_file_write_uint24(s, audit_file, der_length);
                 }
 
                 if (rv == APR_SUCCESS) {

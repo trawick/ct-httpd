@@ -356,6 +356,26 @@ apr_status_t ctutil_file_write_uint16(server_rec *s,
     return rv;
 }
 
+apr_status_t ctutil_file_write_uint24(server_rec *s,
+                                      apr_file_t *f,
+                                      apr_uint32_t in_val)
+{
+    apr_size_t nbytes;
+    apr_status_t rv;
+    char vals[3];
+
+    vals[0] = (in_val & 0xFF0000) >> 16;
+    vals[1] = (in_val & 0x00FF00) >> 8;
+    vals[2] = (in_val & 0x0000FF) >> 0;
+    nbytes = sizeof(vals);
+    rv = apr_file_write(f, vals, &nbytes);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                     "can't write 3-byte length to file");
+    }
+    return rv;
+}
+
 void ctutil_log_array(const char *file, int line, int module_index,
                       int level, server_rec *s, const char *desc,
                       apr_array_header_t *arr)
