@@ -68,6 +68,16 @@ Additionally, the server certificate chain and SCTs are stored for off-line veri
 
 As an optimization, on-line verification and storing of data from the server is only performed the first time a web server child process receives the data.  This saves some processing time as well as disk space.  For typical reverse proxy setups, very little processing overhead will be required.
 
+## Support for off-line auditing of SCTs received by the proxy from servers
+
+* httpd processes queue the server certificate chain and SCTs in a file called audit\_\<PID\>.tmp in the CTAuditStorage directory.  These are flushed and renamed to audit\_\<PID\>.out when the child process exits (MaxConnectionsPerChild, load subsides, restart, stop).
+* The individual files for audit, specific to one httpd child process, will not have duplicates (i.e., multiple occurrences of the exact same server certificate/chain and set of SCTs), though there can be duplicates among files for different httpd child processes.
+* The off-line audit procedure should move the .out files elsewhere and audit the contents.  These .out files will grow unbounded for the life of the server if the set of unique server certificates + SCTs is unbounded.
+  * Currently a configuration mechanism to control the unbounded storage growth does not exist.
+* The file contains a series of elements for each server: SERVER_START (0x0001), certificate data (leaf first followed by any intermediate certificates), and SCT data.
+* Each certificate is represented by CERT_START (0x0002) and three-byte length followed by the certificate in DER.
+* Each SCT is represented by SCT_START (0x0003) and two-byte length followed by the SCT.
+
 Build
 =====
 
@@ -105,18 +115,34 @@ Configure mod\_ssl\_ct like this:
 * proxy and server: log the SSL\_CT\_PEER\_STATUS envvar to see if peer is aware
 * proxy: log the SSL\_PROXY\_SCT\_SOURCES envvar to see where SCTs came from
 
-# Support for off-line auditing of SCTs received by the proxy from servers
+# Performing off-line auditing 
 
-A script to perform auditing (ctauditscts) is currently under development, but it isn't currently working.
+* Apply this patch to the verify\_single\_proof script in the certificate-transparency tools:
+```
+--- a/src/python/ct/client/tools/verify_single_proof.py
++++ b/src/python/ct/client/tools/verify_single_proof.py
+@@ -40,7 +40,11 @@ def run():
+ 
+     #TODO(eranm): Attempt fetching the SCT for this chain if none was given.
+     cert_sct = ct_pb2.SignedCertificateTimestamp()
+-    cert_sct.ParseFromString(open(FLAGS.sct, 'rb').read())
++    #cert_sct.ParseFromString(open(FLAGS.sct, 'rb').read())
++    raw_sct = open(FLAGS.sct, 'rb').read()
++    cert_sct.version = 0
++    cert_sct.timestamp = struct.unpack_from('>Q', raw_sct, 2 + 33)[0]
++
+     print 'SCT for cert:', cert_sct
+ 
+     constructed_leaf = create_leaf(cert_sct.timestamp,
+```
+* Set PYTHONPATH to find the necessary certificate-transparency libraries (probably just the src/python directory).  You may also have to add /usr/local/include if protobuf was installed to /usr/local.
+* Set PATH to include the certificate-transparency/src/python/ct/client/tools directory.
+* Run ctauditscts; the single required parameter is the value of the CTAuditStorage directive.
 
-Here's the related httpd processing:
+## Issues
 
-* httpd processes queue the server certificate chain and SCTs in a file called audit\_\<PID\>.tmp in the CTAuditStorage directory.  These are flushed and renamed to audit\_\<PID\>.out when the child process exits (MaxConnectionsPerChild, load subsides, restart, stop).
-* The individual files for audit, specific to one httpd child process, will not have duplicates (i.e., multiple occurrences of the exact same server certificate/chain and set of SCTs), though there can be duplicates among files for different httpd child processes.
-* The off-line audit procedure should move the .out files elsewhere and audit the contents.  These .out files will grow unbounded for the life of the server if the set of unique server certificates + SCTs is unbounded.
-* No provision is made for unbounded storage growth due to unbounded numbers of backend servers or unbounded numbers of child processes (each with its own .out file).
-* The file contains a series of elements for each server: SERVER_START (0x0001), certificate data (leaf first followed by any intermediate certificates), and SCT data.
-* Each certificate is represented by CERT_START (0x0002) and three-byte length followed by the certificate in DER.
-* Each SCT is represented by SCT_START (0x0003) and two-byte length followed by the SCT.
-
-
+* Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism.)
+* ctauditscts has no provision for passing verify\_single\_proof.py the server name and port of the log.  Verification is dependent on the suitability of the default log coded in verify\_single\_proof.py (currently ct.googleapis.com/pilot).
+* Some resolution is needed for the required patch to verify\_single\_proof.py once more important issues are resolved.
+* verify\_single\_proof.py is itself not complete, but that is planned.
+* Logging of the results from verification is needed, along with a mechanism for reporting exceptions.
