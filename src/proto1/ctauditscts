@@ -32,7 +32,8 @@ def usage():
 def audit(fn, tmp):
    print 'Auditing %s...' % fn
 
-   tmp_leaf_fn = os.path.join(tmp, 'leaf.tmp')
+   tmp_leaf_der_fn = os.path.join(tmp, 'leaf.der.tmp')
+   tmp_leaf_pem_fn = os.path.join(tmp, 'leaf.pem.tmp')
    tmp_sct_fn = os.path.join(tmp, 'sct.tmp')
 
    # First, parse the audit file into a series of related
@@ -65,8 +66,13 @@ def audit(fn, tmp):
             leaf = (offset, der_size)
          offset += der_size
 
-      with open(tmp_leaf_fn, 'wb') as tmp_leaf:
+      with open(tmp_leaf_der_fn, 'wb') as tmp_leaf:
          tmp_leaf.write(bytes[leaf[0]:leaf[0]+leaf[1]])
+
+      # XXX modify verification program to accept DER
+      cmd = 'openssl x509 -inform der -in %s -out %s' % (tmp_leaf_der_fn, tmp_leaf_pem_fn)
+      print '>%s<' % cmd
+      os.system(cmd)
 
       # at least one SCT
       assert struct.unpack_from('>H', bytes, offset)[0] == SCT_START
@@ -74,7 +80,8 @@ def audit(fn, tmp):
       # for each SCT:
       while offset < len(bytes) and struct.unpack_from('>H', bytes, offset)[0] == SCT_START:
          offset += 2
-         sct_size = struct.unpack_from('>H', bytes, offset)[0]
+         len_offset = offset
+         sct_size = struct.unpack_from('>H', bytes, len_offset)[0]
          offset += 2
          print '  SCT size:', hex(sct_size)
          log_id = bytes[offset + 1:offset + 1 + 32]
@@ -83,10 +90,12 @@ def audit(fn, tmp):
          offset += sct_size
 
          with open(tmp_sct_fn, 'wb') as tmp_sct:
+            tmp_sct.write(bytes[len_offset:len_offset+2])
             tmp_sct.write(bytes[sct[0]:sct[0]+sct[1]])
 
-         cmd = 'verify_single_proof.py --cert %s --sct %s' % (tmp_leaf_fn, tmp_sct_fn)
+         cmd = 'verify_single_proof.py --cert %s --sct %s' % (tmp_leaf_pem_fn, tmp_sct_fn)
          print '>%s<' % cmd
+         os.system(cmd)
 
 def main():
    if len(sys.argv) != 2:
