@@ -1,0 +1,84 @@
+#!/usr/bin/env python
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import os
+import struct
+import sys
+
+SERVER_START = 1
+CERT_START = 2
+SCT_START = 3
+
+def usage():
+   print >> sys.stderr, 'Usage: %s /root/of/httpd/audit/files' % sys.argv[0]
+   sys.exit(1)
+
+
+def audit(fn):
+   print 'Auditing %s...' % fn
+
+   # First, parse the audit file into a series of related
+   #
+   #   1. PEM file with certificate chain
+   #      (TODO: teach verify_single_proof to accept DER)
+   #   2. Individual SCT files
+   #
+   # Next,  for each SCT, invoke verify_single_proof to verify.
+   bytes = open(fn, 'rb').read()
+   offset = 0
+   while offset < len(bytes):
+      print 'Got package from server...'
+      val = struct.unpack_from('>H', bytes, offset)
+      assert val[0] == SERVER_START
+      offset += 2
+
+      # at least one certificate
+      assert struct.unpack_from('>H', bytes, offset)[0] == CERT_START
+
+      # for each certificate:
+      while struct.unpack_from('>H', bytes, offset)[0] == CERT_START:
+         offset += 2
+         val = struct.unpack_from('BBB', bytes, offset)
+         offset += 3
+         der_size = (val[0] << 16) | (val[1] << 8) | (val[2] << 0)
+         print '  Certificate size:', hex(der_size)
+         offset += der_size
+
+      # at least one SCT
+      assert struct.unpack_from('>H', bytes, offset)[0] == SCT_START
+
+      # for each SCT:
+      while offset < len(bytes) and struct.unpack_from('>H', bytes, offset)[0] == SCT_START:
+         offset += 2
+         sct_size = struct.unpack_from('>H', bytes, offset)[0]
+         offset += 2
+         print '  SCT size:', hex(sct_size)
+         offset += sct_size
+
+def main():
+   if len(sys.argv) != 2:
+      usage()
+
+   top = sys.argv[1]
+
+   for dirpath, dnames, fnames in os.walk(top):
+      fnames = [fn for fn in fnames if fn[-4:] == '.out']
+      for fn in fnames:
+         audit(os.path.join(dirpath, fn))
+
+if __name__ == "__main__":
+   main()
