@@ -19,10 +19,13 @@
  *
  * + Major limitations
  *   . need to ensure that audit data is written in a way that audit can be
- *     performed
+ *     performed (ctauditscts is not yet working)
  *
  * + Known low-level code kludges/problems
- *   . shouldn't have to read file of server SCTs on every handshake
+ *   . proxy: an httpd child process validates SCTs from a server only on the
+ *     first time the data is received; but it could fail once due to invalid
+ *     timestamp and succeed later after time elapses; fixit!
+ *   . server: shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
  *   . support building with httpd 2.4.x
  */
