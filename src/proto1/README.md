@@ -17,6 +17,8 @@ The SQLite3 database is maintained by a command-line program (ctlogconfig).
 
 * The public key is currently configured as the name of a file containing the PEM encoding of the key, so the PEM file has to exist with the same lifetime as the configuration in order to use that.  It may be more useful to store the DER encoding of the public key directly in the database, while allowing the administrator to specify a PEM or DER-formatted file to be read.
 * The log id, which is the SHA-256 hash of the DER form of the log's public key, cannot currently be configured directly.  That would be the most convenient way to identify a log which is untrusted.
+* For off-line verification of SCTs and logs (using data received by the proxy), a log id is available from the SCT, and this should be correlated with the URL of the log in order to obtain a proof.
+  * In order for off-line verification to use the same configuration, these two pieces of information are required.
 
 ## Use of log configuration by server mode
 
