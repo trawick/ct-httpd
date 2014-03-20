@@ -44,9 +44,56 @@ The base SCT directory is configured with the CTSCTStorage directive, and the ce
 Server processing overview
 ==========================
 
-TBD
+Basically the server wants to send SCTs to the client.  SCTs in a certificate extension or stapled OCSP response will be sent without any special program logic.  The new processing handles sending SCTs configured by the administrator or received from known logs in the ServerHello.
+
+For each server certificate, a daemon process maintains an SCT list to be sent in the ServerHello, created from statically configured SCTs as well as those received from logs.  Logs marked as untrusted will be ignored.  Periodically the daemon will submit certificates to a log as necessary (due to changed log configuration or age) and rebuild the concatenation of SCTs.
+
+The SCT list for a server certificate will be sent to any client that indicates awareness in the ClientHello when that particular server certificate is used.
 
 Proxy processing overview
 =========================
 
-TBD
+The proxy indicates CT awareness in the ClientHello by including the signed\_certificate\_timestamp extension.  It can recognize SCTs received in the ServerHello, in an extension in the server certificate, or on a stapled OCSP response.
+
+On-line verification is attempted for each received SCT:
+
+* for any SCT, the timestamp can be checked to see if it is not yet valid
+* for an SCT from a log for which a public key is configured, the server signature can be checked
+
+If verification fails for at least one SCT and verification was not successful for at least one SCT, the connection is aborted.
+
+Additionally, the server certificate chain and SCTs are stored for off-line verification (not yet working).  Off-line verification should be able to mark a log as untrusted.
+
+As an optimization, on-line verification and storing of data from the server is only performed the first time a web server child process receives the data.  This saves some processing time as well as disk space.  For typical reverse proxy setups, very little processing overhead will be required.
+
+Build
+=====
+
+Build it like this:
+
+* Build OpenSSL 1.0.2-beta1
+* Patch httpd trunk with src/proto1/httpd.patch (which has to be built using OpenSSL 1.0.2-beta1)
+* If you want to store CT log configuration in a database, which will allow dynamic updates in the future, use a build of APR-Util with SQLite3 database support (--with-sqlite3) **and** use CTLogConfigDB instead of CTStaticLogConfig.
+* Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
+* Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
+```
+    apxs -ci -I/path/to/httpd/modules/ssl -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_util.c ssl_ct_sct.c ssl_ct_log_config.c
+```
+
+Configuration
+=============
+
+Configure mod\_ssl\_ct like this:
+```
+    LoadModule ssl_ct_module modules/mod_ssl_ct.so
+    CTStaticLogConfig - - http://localhost:8888/
+    CTStaticLogConfig - - http://otherhost:9999/
+    CTStaticLogConfig /path/to/log-public-key.pem - -
+    CTAuditStorage /tmp/audit
+    CTSCTStorage /tmp/newscts
+    CTToolsDir /home/trawick/git/certificate-transparency
+    CTMaxSCTAge 3600 # 1 hour
+```
+* If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate under CTSCTStorage.  (The SHA256 digest of the server certificate is the directory name.)
+* You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.  This requires SQLite3 support in APR-Util.
+* The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
