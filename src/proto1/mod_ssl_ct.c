@@ -105,7 +105,7 @@ typedef struct ct_server_config {
     apr_array_header_t *db_log_config;
     apr_pool_t *db_log_config_pool;
     apr_array_header_t *static_log_config;
-    apr_array_header_t *cert_sct_dirs;
+    apr_array_header_t *server_cert_info; /* ct_server_cert_info */
     apr_hash_t *static_cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
@@ -136,6 +136,11 @@ typedef struct ct_conn_config {
     apr_size_t ocsp_sct_list_size;
     apr_array_header_t *all_scts; /* array of ct_sct_data */
 } ct_conn_config;
+
+typedef struct ct_server_cert_info {
+    const char *fingerprint;
+    const char *sct_dir;
+} ct_server_cert_info;
 
 typedef struct ct_sct_data {
     const void *data;
@@ -240,6 +245,7 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
 
 static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
                                  const char *cert_sct_dir,
+                                 const char *static_cert_sct_dir,
                                  int max_sh_sct)
 {
     /* Read the various .sct files and stick them together in a single file */
@@ -252,18 +258,6 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     const char *cur_sct_file;
     const char * const *elts;
     int i, scts_written = 0, skipped = 0;
-
-    /* horrible kludge since the right info isn't handy */
-    const char *fingerprint, *static_cert_sct_dir;
-    ct_server_config *sconf = ap_get_module_config(s->module_config,
-                                                   &ssl_ct_module);
-    fingerprint = ap_strrchr_c(cert_sct_dir, '/') + 1;
-    static_cert_sct_dir = apr_hash_get(sconf->static_cert_sct_dirs,
-                                       fingerprint, APR_HASH_KEY_STRING);
-
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, "fingerprint %s, dir %s",
-                 fingerprint, static_cert_sct_dir);
-    /* end horrible kludge */
 
     rv = ctutil_path_join(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
@@ -720,6 +714,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
 
 static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
                                           const char *cert_sct_dir,
+                                          const char *static_cert_sct_dir,
                                           apr_array_header_t *log_config,
                                           const char *ct_exe,
                                           apr_time_t max_sct_age,
@@ -759,7 +754,7 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
         }
     }
 
-    rv = collate_scts(s, p, cert_sct_dir, max_sh_sct);
+    rv = collate_scts(s, p, cert_sct_dir, static_cert_sct_dir, max_sh_sct);
     if (rv != APR_SUCCESS) {
         return rv;
     }
@@ -998,19 +993,27 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p,
         ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                        &ssl_ct_module);
         int i;
-        const char **cert_sct_dirs_elts;
- 
-        if (sconf && sconf->cert_sct_dirs) {
-            cert_sct_dirs_elts = (const char **)sconf->cert_sct_dirs->elts;
-            for (i = 0; i < sconf->cert_sct_dirs->nelts; i++) {
+        const ct_server_cert_info *cert_info_elts;
+
+        if (sconf && sconf->server_cert_info) {
+            cert_info_elts =
+                (const ct_server_cert_info *)sconf->server_cert_info->elts;
+            for (i = 0; i < sconf->server_cert_info->nelts; i++) {
                 /* we may have already processed this cert for another
                  * server_rec
                  */
-                if (!apr_hash_get(already_processed, cert_sct_dirs_elts[i],
+                if (!apr_hash_get(already_processed, cert_info_elts[i].sct_dir,
                                   APR_HASH_KEY_STRING)) {
-                    apr_hash_set(already_processed, cert_sct_dirs_elts[i],
+                    const char *static_cert_sct_dir = 
+                        apr_hash_get(sconf->static_cert_sct_dirs,
+                                     cert_info_elts[i].fingerprint,
+                                     APR_HASH_KEY_STRING);
+
+                    apr_hash_set(already_processed, cert_info_elts[i].sct_dir,
                                  APR_HASH_KEY_STRING, "done");
-                    rv = refresh_scts_for_cert(s_main, p, cert_sct_dirs_elts[i],
+                    rv = refresh_scts_for_cert(s_main, p,
+                                               cert_info_elts[i].sct_dir,
+                                               static_cert_sct_dir,
                                                log_config,
                                                sconf->ct_exe,
                                                sconf->max_sct_age,
@@ -1209,8 +1212,9 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
     int i, rc;
     char *cert_sct_dir, *servercerts_pem;
     const char *fingerprint;
+    ct_server_cert_info *cert_info;
 
-    sconf->cert_sct_dirs = apr_array_make(p, 2, sizeof(char *));
+    sconf->server_cert_info = apr_array_make(p, 2, sizeof(ct_server_cert_info));
 
     rc = SSL_CTX_set_current_cert(ctx, SSL_CERT_SET_FIRST);
     while (rc) {
@@ -1261,8 +1265,9 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                          "wrote server cert and chain to %s", servercerts_pem);
 
-            *(char **)apr_array_push(sconf->cert_sct_dirs)
-                = cert_sct_dir;
+            cert_info = (ct_server_cert_info *)apr_array_push(sconf->server_cert_info);
+            cert_info->sct_dir = cert_sct_dir;
+            cert_info->fingerprint = fingerprint;
         }
         else {
             ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
