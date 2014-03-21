@@ -112,6 +112,7 @@ typedef struct ct_server_config {
     const char *ct_exe;
     const char *log_config_fname;
     apr_time_t max_sct_age;
+    int max_sh_sct;
 #define PROXY_AWARENESS_UNSET -1
 #define PROXY_OBLIVIOUS        1
 #define PROXY_AWARE            2 /* default */
@@ -237,7 +238,8 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
                                         */
 
 static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
-                                 const char *cert_sct_dir)
+                                 const char *cert_sct_dir,
+                                 int max_sh_sct)
 {
     /* Read the various .sct files and stick them together in a single file */
     apr_array_header_t *arr;
@@ -248,7 +250,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     char *tmp_collated_fn, *collated_fn;
     const char *cur_sct_file;
     const char * const *elts;
-    int i, scts_written = 0;
+    int i, scts_written = 0, skipped = 0;
 
     rv = ctutil_path_join(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
@@ -325,6 +327,14 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
         sct_release(&fields);
 
+        /* Only now do we know that the SCT is valid to send, so
+         * see if it has to be skipped by configured limit.
+         */
+        if (scts_written >= max_sh_sct) {
+            skipped++;
+            continue;
+        }
+
         overall_len += scts_size + 2; /* include size header */
 
         rv = ctutil_file_write_uint16(s, tmpfile, (apr_uint16_t)scts_size);
@@ -341,6 +351,14 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         }
 
         scts_written++;
+    }
+
+    if (rv == APR_SUCCESS && skipped) {
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                     "SCTs sent in ServerHello are limited to %d by "
+                     "CTServerHelloSCTLimit (ignoring %d)",
+                     max_sh_sct,
+                     skipped);
     }
 
     if (rv == APR_SUCCESS) {
@@ -682,7 +700,8 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
                                           const char *cert_sct_dir,
                                           apr_array_header_t *log_config,
                                           const char *ct_exe,
-                                          apr_time_t max_sct_age)
+                                          apr_time_t max_sct_age,
+                                          int max_sh_sct)
 {
     apr_status_t rv;
     ct_log_config **config_elts;
@@ -718,7 +737,7 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
         }
     }
 
-    rv = collate_scts(s, p, cert_sct_dir);
+    rv = collate_scts(s, p, cert_sct_dir, max_sh_sct);
     if (rv != APR_SUCCESS) {
         return rv;
     }
@@ -972,7 +991,8 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p,
                     rv = refresh_scts_for_cert(s_main, p, cert_sct_dirs_elts[i],
                                                log_config,
                                                sconf->ct_exe,
-                                               sconf->max_sct_age);
+                                               sconf->max_sct_age,
+                                               sconf->max_sh_sct);
                     if (rv != APR_SUCCESS) {
                         return rv;
                     }
@@ -2269,6 +2289,7 @@ static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
 
     conf->max_sct_age = apr_time_from_sec(3600);
     conf->proxy_awareness = PROXY_AWARENESS_UNSET;
+    conf->max_sh_sct = 100;
     
     return conf;
 }
@@ -2288,6 +2309,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     conf->log_config_fname = base->log_config_fname;
     conf->db_log_config = base->db_log_config;
     conf->static_log_config = base->static_log_config;
+    conf->max_sh_sct = base->max_sh_sct;
 
     conf->proxy_awareness = (virt->proxy_awareness != PROXY_AWARENESS_UNSET)
         ? virt->proxy_awareness
@@ -2437,28 +2459,43 @@ static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *parse_num(apr_pool_t *p,
+                             const char *arg, long min_val,
+                             long max_val, long *val,
+                             const char *cmd_name)
+{
+    char *endptr;
+
+    errno = 0;
+    *val = strtol(arg, &endptr, 10);
+    if (errno != 0
+        || *endptr != '\0'
+        || *val < min_val
+        || *val > max_val) {
+        return apr_psprintf(p, "%s must be between %ld "
+                            "and %ld (was '%s')", cmd_name, min_val,
+                            max_val, arg);
+    }
+
+    return NULL;
+}
+                             
 static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
 {
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
     const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
     long val;
-    char *endptr;
 
     if (err) {
         return err;
     }
 
-    errno = 0;
-    val = strtol(arg, &endptr, 10);
-    if (errno != 0
-        || *endptr != '\0'
-        || val < 10
-        || val > 3600 * 12) {
-        return apr_psprintf(cmd->pool, "CTMaxSCTAge must be between 10 seconds "
-                            "and 12 hours worth of seconds (%d)",
-                            3600 * 12);
+    err = parse_num(cmd->pool, arg, 10, 3600 * 12, &val, "CTMaxSCTAge");
+    if (err) {
+        return err;
     }
+
     sconf->max_sct_age = apr_time_from_sec(val);
     return NULL;
 }    
@@ -2547,6 +2584,27 @@ static const char *ct_proxy_awareness(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *ct_sct_limit(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+    long val;
+
+    if (err) {
+        return err;
+    }
+
+    err = parse_num(cmd->pool, arg, 1, 100, &val,
+                    "CTServerHelloSCTLimit");
+    if (err) {
+        return err;
+    }
+
+    sconf->max_sh_sct = val;
+    return NULL;
+}
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
@@ -2566,6 +2624,8 @@ static const command_rec ct_cmds[] =
                   "\"aware\" to ask for and process SCTs but allow all connections, "
                   "or \"require\" to abort backend connections if an acceptable "
                   "SCT is not provided"),
+    AP_INIT_TAKE1("CTServerHelloSCTLimit", ct_sct_limit, NULL, RSRC_CONF,
+                  "Limit on number of SCTs sent in ServerHello"),
     {NULL}
 };
 

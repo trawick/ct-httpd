@@ -43,6 +43,8 @@ In addition, the administrator can statically configure one or more SCTs for a p
 
 The base SCT directory is configured with the CTSCTStorage directive, and the certificate-specific directory name is the lower-case hex encoding of the SHA-256 hash of the DER form of the server leaf certificate.  This directory will contain SCTs received from configured logs, as well as any SCTs stored by the administrator.
 
+The number of SCTs sent in the ServerHello (i.e., not including those in a certificate extension or stapled OCSP response) can be limited by the CTServerHelloSCTLimit direcive.
+
 Server processing overview
 ==========================
 
@@ -105,6 +107,7 @@ Configure mod\_ssl\_ct like this:
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
     CTMaxSCTAge 3600 # 1 hour
+    CTServerHelloSCTLimit 100 # essentially unlimited
 ```
 * If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate under CTSCTStorage.  (The SHA256 digest of the server certificate is the directory name.)
 * You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.  This requires SQLite3 support in APR-Util.
