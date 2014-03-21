@@ -2414,80 +2414,6 @@ static void ct_register_hooks(apr_pool_t *p)
                      NULL, NULL, APR_HOOK_MIDDLE);
 }
 
-static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
-{
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-
-    if (err) {
-        return err;
-    }
-
-    if (!ctutil_dir_exists(cmd->pool, arg)) {
-        return apr_pstrcat(cmd->pool, "CTSCTStorage: Directory ", arg,
-                           " does not exist", NULL);
-    }
-
-    sconf->sct_storage = arg;
-
-    return NULL;
-}
-
-static const char *ct_audit_storage(cmd_parms *cmd, void *x, const char *arg)
-{
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-
-    if (err) {
-        return err;
-    }
-
-    if (!ctutil_dir_exists(cmd->pool, arg)) {
-        return apr_pstrcat(cmd->pool, "CTAuditStorage: Directory ", arg,
-                           " does not exist", NULL);
-    }
-
-    sconf->audit_storage = arg;
-
-    return NULL;
-}
-
-static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
-{
-    apr_status_t rv;
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-
-    if (err) {
-        return err;
-    }
-
-    if (!ctutil_dir_exists(cmd->pool, arg)) {
-        return apr_pstrcat(cmd->pool, "CTToolsDir: Directory ", arg,
-                           " does not exist", NULL);
-    }
-
-    rv = ctutil_path_join((char **)&sconf->ct_exe, arg,  "src/client/ct" DOTEXE,
-                          cmd->pool, NULL);
-    if (rv != APR_SUCCESS) {
-        return apr_psprintf(cmd->pool,
-                            "CTToolsDir: Couldn't build path to ct" DOTEXE
-                            ": %pm", &rv);
-    }
-
-    if (!ctutil_file_exists(cmd->pool, sconf->ct_exe)) {
-        return apr_pstrcat(cmd->pool, "CTToolsDir: File ", sconf->ct_exe,
-                           " does not exist", NULL);
-    }
-
-    sconf->ct_tools_dir = arg;
-
-    return NULL;
-}
-
 static const char *parse_num(apr_pool_t *p,
                              const char *arg, long min_val,
                              long max_val, long *val,
@@ -2509,6 +2435,41 @@ static const char *parse_num(apr_pool_t *p,
     return NULL;
 }
                              
+static const char *ct_audit_storage(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    if (!ctutil_dir_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool, "CTAuditStorage: Directory ", arg,
+                           " does not exist", NULL);
+    }
+
+    sconf->audit_storage = arg;
+
+    return NULL;
+}
+
+static const char *ct_log_config_db(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    sconf->log_config_fname = arg;
+
+    return NULL;
+}
+
 static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
 {
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
@@ -2529,7 +2490,29 @@ static const char *ct_max_sct_age(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }    
 
-static const char *ct_log_config_db(cmd_parms *cmd, void *x, const char *arg)
+static const char *ct_proxy_awareness(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+
+    if (!strcasecmp(arg, "oblivious")) {
+        sconf->proxy_awareness = PROXY_OBLIVIOUS;
+    }
+    else if (!strcasecmp(arg, "aware")) {
+        sconf->proxy_awareness = PROXY_AWARE;
+    }
+    else if (!strcasecmp(arg, "require")) {
+        sconf->proxy_awareness = PROXY_REQUIRE;
+    }
+    else {
+        return apr_pstrcat(cmd->pool, "CTProxyAwareness: Invalid argument \"",
+                           arg, "\"", NULL);
+    }
+
+    return NULL;
+}
+
+static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
 {
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
@@ -2539,8 +2522,34 @@ static const char *ct_log_config_db(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    sconf->log_config_fname = arg;
+    if (!ctutil_dir_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool, "CTSCTStorage: Directory ", arg,
+                           " does not exist", NULL);
+    }
 
+    sconf->sct_storage = arg;
+
+    return NULL;
+}
+
+static const char *ct_sct_limit(cmd_parms *cmd, void *x, const char *arg)
+{
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+    long val;
+
+    if (err) {
+        return err;
+    }
+
+    err = parse_num(cmd->pool, arg, 1, 100, &val,
+                    "CTServerHelloSCTLimit");
+    if (err) {
+        return err;
+    }
+
+    sconf->max_sh_sct = val;
     return NULL;
 }
 
@@ -2591,49 +2600,6 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
     return NULL;
 }
 
-static const char *ct_proxy_awareness(cmd_parms *cmd, void *x, const char *arg)
-{
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-
-    if (!strcasecmp(arg, "oblivious")) {
-        sconf->proxy_awareness = PROXY_OBLIVIOUS;
-    }
-    else if (!strcasecmp(arg, "aware")) {
-        sconf->proxy_awareness = PROXY_AWARE;
-    }
-    else if (!strcasecmp(arg, "require")) {
-        sconf->proxy_awareness = PROXY_REQUIRE;
-    }
-    else {
-        return apr_pstrcat(cmd->pool, "CTProxyAwareness: Invalid argument \"",
-                           arg, "\"", NULL);
-    }
-
-    return NULL;
-}
-
-static const char *ct_sct_limit(cmd_parms *cmd, void *x, const char *arg)
-{
-    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
-                                                   &ssl_ct_module);
-    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-    long val;
-
-    if (err) {
-        return err;
-    }
-
-    err = parse_num(cmd->pool, arg, 1, 100, &val,
-                    "CTServerHelloSCTLimit");
-    if (err) {
-        return err;
-    }
-
-    sconf->max_sh_sct = val;
-    return NULL;
-}
-
 static const char *ct_static_scts(cmd_parms *cmd, void *x, const char *cert_fn,
                                   const char *sct_dn)
 {
@@ -2679,20 +2645,48 @@ static const char *ct_static_scts(cmd_parms *cmd, void *x, const char *cert_fn,
     return NULL;
 }
 
+static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
+{
+    apr_status_t rv;
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+
+    if (err) {
+        return err;
+    }
+
+    if (!ctutil_dir_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool, "CTToolsDir: Directory ", arg,
+                           " does not exist", NULL);
+    }
+
+    rv = ctutil_path_join((char **)&sconf->ct_exe, arg,  "src/client/ct" DOTEXE,
+                          cmd->pool, NULL);
+    if (rv != APR_SUCCESS) {
+        return apr_psprintf(cmd->pool,
+                            "CTToolsDir: Couldn't build path to ct" DOTEXE
+                            ": %pm", &rv);
+    }
+
+    if (!ctutil_file_exists(cmd->pool, sconf->ct_exe)) {
+        return apr_pstrcat(cmd->pool, "CTToolsDir: File ", sconf->ct_exe,
+                           " does not exist", NULL);
+    }
+
+    sconf->ct_tools_dir = arg;
+
+    return NULL;
+}
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
                   "Location to store files of audit data"),
-    AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
-                  "Location to store SCTs obtained from logs"),
-    AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
-                  "Location of certificate-transparency.org tools"),
-    AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
-                  "Max age of SCT obtained from log before refresh"),
     AP_INIT_TAKE1("CTLogConfigDB", ct_log_config_db, NULL, RSRC_CONF,
                   "Log configuration database"),
-    AP_INIT_TAKE_ARGV("CTStaticLogConfig", ct_static_log_config, NULL, RSRC_CONF,
-                      "Static log configuration record"),
+    AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
+                  "Max age of SCT obtained from log before refresh"),
     AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL, RSRC_CONF,
                   "\"oblivious\" to neither ask for nor check SCTs, "
                   "\"aware\" to ask for and process SCTs but allow all connections, "
@@ -2700,8 +2694,15 @@ static const command_rec ct_cmds[] =
                   "SCT is not provided"),
     AP_INIT_TAKE1("CTServerHelloSCTLimit", ct_sct_limit, NULL, RSRC_CONF,
                   "Limit on number of SCTs sent in ServerHello"),
+    AP_INIT_TAKE_ARGV("CTStaticLogConfig", ct_static_log_config, NULL, RSRC_CONF,
+                      "Static log configuration record"),
     AP_INIT_TAKE2("CTStaticSCTs", ct_static_scts, NULL, RSRC_CONF,
-                  "Point to directory with static SCTs corresponding to the specified certificate"),
+                  "Point to directory with static SCTs corresponding to the "
+                  "specified certificate"),
+    AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
+                  "Location to store SCTs obtained from logs"),
+    AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
+                  "Location of certificate-transparency.org tools"),
     {NULL}
 };
 
