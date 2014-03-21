@@ -106,6 +106,7 @@ typedef struct ct_server_config {
     apr_pool_t *db_log_config_pool;
     apr_array_header_t *static_log_config;
     apr_array_header_t *cert_sct_dirs;
+    apr_hash_t *static_cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
     const char *ct_tools_dir;
@@ -252,6 +253,18 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
     const char * const *elts;
     int i, scts_written = 0, skipped = 0;
 
+    /* horrible kludge since the right info isn't handy */
+    const char *fingerprint, *static_cert_sct_dir;
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
+    fingerprint = ap_strrchr_c(cert_sct_dir, '/') + 1;
+    static_cert_sct_dir = apr_hash_get(sconf->static_cert_sct_dirs,
+                                       fingerprint, APR_HASH_KEY_STRING);
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, "fingerprint %s, dir %s",
+                 fingerprint, static_cert_sct_dir);
+    /* end horrible kludge */
+
     rv = ctutil_path_join(&collated_fn, cert_sct_dir, COLLATED_SCTS_BASENAME, p, s);
     if (rv != APR_SUCCESS) {
         return rv;
@@ -287,7 +300,15 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
+    arr = NULL; /* Build list from scratch, creating array */
     rv = ctutil_read_dir(p, s, cert_sct_dir, "*.sct", &arr);
+    if (rv != APR_SUCCESS) {
+        apr_file_close(tmpfile);
+        return rv;
+    }
+
+    /* Add in any SCTs that the administrator has configured */
+    rv = ctutil_read_dir(p, s, static_cert_sct_dir, "*.sct", &arr);
     if (rv != APR_SUCCESS) {
         apr_file_close(tmpfile);
         return rv;
@@ -669,6 +690,7 @@ static apr_status_t update_log_list_for_cert(server_rec *s, apr_pool_t *p,
                      "List of previous logs doesn't exist (%s), removing previously obtained SCTs",
                      listfile);
 
+        arr = NULL; /* Build list from scratch, creating array */
         rv = ctutil_read_dir(p, s, cert_sct_dir, LOG_SCT_PREFIX "*.sct", &arr);
         if (rv != APR_SUCCESS) {
             return rv;
@@ -2290,6 +2312,7 @@ static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
     conf->max_sct_age = apr_time_from_sec(3600);
     conf->proxy_awareness = PROXY_AWARENESS_UNSET;
     conf->max_sh_sct = 100;
+    conf->static_cert_sct_dirs = apr_hash_make(p);
     
     return conf;
 }
@@ -2310,6 +2333,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     conf->db_log_config = base->db_log_config;
     conf->static_log_config = base->static_log_config;
     conf->max_sh_sct = base->max_sh_sct;
+    conf->static_cert_sct_dirs = base->static_cert_sct_dirs;
 
     conf->proxy_awareness = (virt->proxy_awareness != PROXY_AWARENESS_UNSET)
         ? virt->proxy_awareness
@@ -2605,6 +2629,51 @@ static const char *ct_sct_limit(cmd_parms *cmd, void *x, const char *arg)
     return NULL;
 }
 
+static const char *ct_static_scts(cmd_parms *cmd, void *x, const char *cert_fn,
+                                  const char *sct_dn)
+{
+    apr_pool_t *p = cmd->pool;
+    apr_status_t rv;
+    ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
+                                                   &ssl_ct_module);
+    const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
+    const char *fingerprint;
+    FILE *pemfile;
+    X509 *cert;
+
+    if (err) {
+        return err;
+    }
+
+    pemfile = fopen(cert_fn, "r");
+    if (!pemfile) {
+        rv = errno; /* Unix-ism! */
+        return apr_psprintf(p, "could not open certificate file %s (%pm)",
+                            cert_fn, &rv);
+    }
+    
+    cert = PEM_read_X509(pemfile, NULL, NULL, NULL);
+    if (!cert) {
+        return apr_psprintf(p, "could not read certificate from file %s",
+                            cert_fn);
+    }
+
+    fclose(pemfile);
+
+    fingerprint = get_cert_fingerprint(cmd->pool, cert);
+    X509_free(cert);
+
+    if (!ctutil_dir_exists(p, sct_dn)) {
+        return apr_pstrcat(p, "CTStaticSCTs: Directory ", sct_dn,
+                           " does not exist", NULL);
+    }
+
+    apr_hash_set(sconf->static_cert_sct_dirs, fingerprint,
+                 APR_HASH_KEY_STRING, sct_dn);
+
+    return NULL;
+}
+
 static const command_rec ct_cmds[] =
 {
     AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
@@ -2626,6 +2695,8 @@ static const command_rec ct_cmds[] =
                   "SCT is not provided"),
     AP_INIT_TAKE1("CTServerHelloSCTLimit", ct_sct_limit, NULL, RSRC_CONF,
                   "Limit on number of SCTs sent in ServerHello"),
+    AP_INIT_TAKE2("CTStaticSCTs", ct_static_scts, NULL, RSRC_CONF,
+                  "Point to directory with static SCTs corresponding to the specified certificate"),
     {NULL}
 };
 

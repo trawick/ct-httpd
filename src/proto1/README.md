@@ -39,9 +39,9 @@ The primary sources of SCTs sent to clients in server mode are
 * included in a certificate extension
 * included in the stapled OCSP response
 
-In addition, the administrator can statically configure one or more SCTs for a particular server certificate.  This is configured by storing an SCT in a file with extension .sct in the SCT directory for a certificate.
+In addition, the administrator can statically configure one or more SCTs for a particular server certificate.  This is configured by using the CTStaticSCTs directive to associate a directory maintained by the administrator with a server certificate; any files in that directory with extension .sct will also be sent when the certificate is used.
 
-The base SCT directory is configured with the CTSCTStorage directive, and the certificate-specific directory name is the lower-case hex encoding of the SHA-256 hash of the DER form of the server leaf certificate.  This directory will contain SCTs received from configured logs, as well as any SCTs stored by the administrator.
+The base SCT directory is configured with the CTSCTStorage directive, and the certificate-specific directory name is the lower-case hex encoding of the SHA-256 hash of the DER form of the server leaf certificate.  This directory will contain SCTs received from configured logs.
 
 The number of SCTs sent in the ServerHello (i.e., not including those in a certificate extension or stapled OCSP response) can be limited by the CTServerHelloSCTLimit direcive.
 
@@ -57,7 +57,7 @@ The SCT list for a server certificate will be sent to any client that indicates 
 Proxy processing overview
 =========================
 
-The proxy indicates CT awareness in the ClientHello by including the signed\_certificate\_timestamp extension.  It can recognize SCTs received in the ServerHello, in an extension in the server certificate, or on a stapled OCSP response.
+The proxy indicates CT awareness in the ClientHello by including the signed\_certificate\_timestamp extension.  It can recognize SCTs received in the ServerHello, in an extension in the server certificate, or in a stapled OCSP response.
 
 On-line verification is attempted for each received SCT:
 
@@ -106,10 +106,11 @@ Configure mod\_ssl\_ct like this:
     CTAuditStorage /tmp/audit
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
-    CTMaxSCTAge 3600 # 1 hour
-    CTServerHelloSCTLimit 100 # essentially unlimited
+    CTMaxSCTAge 3600           (1 hour)
+    CTServerHelloSCTLimit 100    (essentially unlimited)
+    # CTStaticSCTs /path/to/server-cert.pem /path/to/directory
 ```
-* If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate under CTSCTStorage.  (The SHA256 digest of the server certificate is the directory name.)
+* If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate specified by CTStaticSCTs.
 * You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.  This requires SQLite3 support in APR-Util.
 * The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
 

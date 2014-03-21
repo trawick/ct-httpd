@@ -122,8 +122,11 @@ apr_status_t ctutil_read_dir(apr_pool_t *p,
     apr_status_t rv;
     int reported = 0;
 
-    *outarr = NULL;
-    arr = apr_array_make(p, 4, sizeof(char *));
+    /* add to existing array if it already exists */
+    arr = *outarr;
+    if (arr == NULL) {
+        arr = apr_array_make(p, 4, sizeof(char *));
+    }
 
     rv = apr_dir_open(&d, dirname, p);
     if (rv != APR_SUCCESS) {
