@@ -2681,27 +2681,58 @@ static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
 
 static const command_rec ct_cmds[] =
 {
-    AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTAuditStorage", ct_audit_storage, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY - audit data spans servers */
                   "Location to store files of audit data"),
-    AP_INIT_TAKE1("CTLogConfigDB", ct_log_config_db, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTLogConfigDB", ct_log_config_db, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY - otherwise, you couldn't share
+                              * the same SCT list for a cert used by two
+                              * different vhosts (and the SCT maintenance daemon
+                              * would be more complex)
+                              */
                   "Log configuration database"),
-    AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTMaxSCTAge", ct_max_sct_age, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY - otherwise, you couldn't share
+                              * the same SCT list for a cert used by two
+                              * different vhosts
+                              */
                   "Max age of SCT obtained from log before refresh"),
-    AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTProxyAwareness", ct_proxy_awareness, NULL,
+                  RSRC_CONF, /* per-server */
                   "\"oblivious\" to neither ask for nor check SCTs, "
                   "\"aware\" to ask for and process SCTs but allow all connections, "
                   "or \"require\" to abort backend connections if an acceptable "
                   "SCT is not provided"),
-    AP_INIT_TAKE1("CTServerHelloSCTLimit", ct_sct_limit, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTServerHelloSCTLimit", ct_sct_limit, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY - otherwise, you couldn't share
+                              * the same SCT list for a cert used by two
+                              * different vhosts
+                              */
                   "Limit on number of SCTs sent in ServerHello"),
-    AP_INIT_TAKE_ARGV("CTStaticLogConfig", ct_static_log_config, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY - otherwise, you couldn't share
+                              * the same SCT list for a cert used by two
+                              * different vhosts (and the SCT maintenance daemon
+                              * would be more complex)
+                              */
+                  "Location to store SCTs obtained from logs"),
+    AP_INIT_TAKE_ARGV("CTStaticLogConfig", ct_static_log_config, NULL,
+                      RSRC_CONF, /* GLOBAL_ONLY */
                       "Static log configuration record"),
-    AP_INIT_TAKE2("CTStaticSCTs", ct_static_scts, NULL, RSRC_CONF,
+    AP_INIT_TAKE2("CTStaticSCTs", ct_static_scts, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY  - otherwise, you couldn't share
+                              * the same SCT list for a cert used by two
+                              * different vhosts (and the SCT maintenance daemon
+                              * would be more complex)
+                              */
                   "Point to directory with static SCTs corresponding to the "
                   "specified certificate"),
-    AP_INIT_TAKE1("CTSCTStorage", ct_sct_storage, NULL, RSRC_CONF,
-                  "Location to store SCTs obtained from logs"),
-    AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL, RSRC_CONF,
+    AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL,
+                  RSRC_CONF, /* GLOBAL_ONLY - otherwise, you couldn't share
+                              * the same SCTs for a cert used by two
+                              * different vhosts (and it would be just plain
+                              * silly :) )
+                              */
                   "Location of certificate-transparency.org tools"),
     {NULL}
 };
