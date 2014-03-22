@@ -25,14 +25,16 @@ def create_tables(db_name):
     cxn = sqlite3.connect(db_name)
     cur = cxn.cursor()
 
-    cur.execute('CREATE TABLE loginfo('
-              + 'id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, '
-              + 'log_id TEXT, '
-              + 'public_key TEXT, '  # path to PEM-encoded file
-              + 'distrusted INTEGER, '  # non-zero if not trusted
-              + 'min_valid_timestamp INTEGER, '
-              + 'max_valid_timestamp INTEGER, '
-              + 'url TEXT)') 
+    cur.execute(
+        'CREATE TABLE loginfo('
+        + 'id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, '
+        + 'log_id TEXT, '
+        + 'public_key TEXT, '  # path to PEM-encoded file
+        + 'distrusted INTEGER, '  # non-zero if not trusted
+        + 'min_valid_timestamp INTEGER, '
+        + 'max_valid_timestamp INTEGER, '
+        + 'url TEXT)'
+    )
     cur.close()
     cxn.commit()
     cxn.close()
@@ -166,16 +168,20 @@ def time_range(cur, args):
     if len(args) != 0:
         usage()
     if not record_id:
-        stmt = 'INSERT INTO loginfo (log_id, min_valid_timestamp, max_valid_timestamp) VALUES(?, ?, ?)'
+        stmt = 'INSERT INTO loginfo ' + \
+               '(log_id, min_valid_timestamp, max_valid_timestamp) ' + \
+               'VALUES(?, ?, ?)'
         cur.execute(stmt, [log_id, min_valid_time, max_valid_time])
     else:
-        stmt = 'UPDATE loginfo SET min_valid_timestamp = ?, max_valid_timestamp = ? WHERE id = ?'
+        stmt = 'UPDATE loginfo SET min_valid_timestamp = ?, ' + \
+               'max_valid_timestamp = ? WHERE id = ?'
         cur.execute(stmt, [min_valid_time, max_valid_time, record_id])
 
 
 class ConfigEntry:
 
     pass
+
 
 def dump_ll(cur):
     stmt = 'SELECT * FROM loginfo'
@@ -193,6 +199,7 @@ def dump_ll(cur):
         recs += [obj]
     return recs
 
+
 def dump(cur, args):
     if len(args) != 0:
         usage()
@@ -200,32 +207,45 @@ def dump(cur, args):
     for rec in recs:
         not_conf = '(not configured)'
 
+        mint = \
+            str(rec.min_valid_timestamp) if rec.min_valid_timestamp else '-INF'
+        maxt = \
+            str(rec.max_valid_timestamp) if rec.max_valid_timestamp else '+INF'
         print 'Log entry:'
         print '  Record ' + str(rec.id) + \
             (' (DISTRUSTED)' if rec.distrusted else '')
         print '  Log id         : ' + (rec.log_id if rec.log_id else not_conf)
-        print '  Public key file: ' + (rec.public_key if rec.public_key else not_conf)
+        print '  Public key file: ' + \
+            (rec.public_key if rec.public_key else not_conf)
         print '  URL            : ' + (rec.url if rec.url else not_conf)
-        print '  Time range     : ' + \
-            (str(rec.min_valid_timestamp) if rec.min_valid_timestamp else '-INF') + \
-            ' to ' + \
-            (str(rec.max_valid_timestamp) if rec.max_valid_timestamp else '+INF')
+        print '  Time range     : ' + mint + ' to ' + maxt
         print ''
 
 
 def usage():
-    print >> sys.stderr, 'Usage: %s /path/to/log-config-db command args' % sys.argv[0]
-    print >> sys.stderr, 'Commands:'
-    print >> sys.stderr, '  dump                                                          display config-db contents'
-    print >> sys.stderr, '  configure-public-key [record-id] /path/to/log-public-key.pem  configure public key'
-    print >> sys.stderr, '  configure-url [record-id] http://www.example.com/path/        configure URL'
-    print >> sys.stderr, '  valid-time-range record-id min-range|-|= max-range|0|=        configure min and/or max valid timestamps'
-    print >> sys.stderr, '  trust record-id                                               mark log as trusted (default)'
-    print >> sys.stderr, '  distrust record-id                                            mark log as untrusted'
-    print >> sys.stderr, '  forget record-id                                              remove log from config-db'
-    print >> sys.stderr, 'record-id references an existing entry and is in the form:'
-    print >> sys.stderr, '  #<record-number>'
-    print >> sys.stderr, '  (displayable with the dump command)'
+    help = """Usage: %s /path/to/log-config-db command args
+
+Commands:
+  display config-db contents:
+    dump
+  configure public key:
+    configure-public-key [record-id] /path/log-pub-key.pem
+  configure URL:
+    configure-url [record-id] http://www.example.com/path/
+  configure min and/or max valid timestamps:
+    valid-time-range record-id min-range max-range
+  mark log as trusted (default):
+    trust record-id
+  mark log as untrusted:
+    distrust record-id
+  remove log config from config-db:
+    forget record-id
+
+record-id references an existing entry and is in the form:
+  #<record-number>
+  (displayable with the dump command)
+""" % sys.argv[0]
+    print >> sys.stderr, help
     sys.exit(1)
 
 
@@ -244,7 +264,7 @@ def main(argv):
             'forget': forget_log,
             'valid-time-range': time_range,
             'dump': dump,
-        }
+            }
 
     cmds_requiring_db = ['dump', 'forget']  # db must already exist
 
