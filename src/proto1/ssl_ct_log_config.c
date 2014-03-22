@@ -191,6 +191,9 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
             return rv;
         }
     }
+    else {
+        public_key = NULL;
+    }
 
     if (url) {
         rv = parse_log_url(p, url, &uri);
@@ -284,16 +287,37 @@ apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
          rv = apr_dbd_get_row(driver, p, res, &row, -1)) {
         int cur = 0;
         const char *id = apr_dbd_get_entry(driver, row, cur++);
+        const char *log_id = apr_dbd_get_entry(driver, row, cur++);
         const char *public_key = apr_dbd_get_entry(driver, row, cur++);
-        const char *audit_status = apr_dbd_get_entry(driver, row, cur++);
+        const char *distrusted = apr_dbd_get_entry(driver, row, cur++);
+        const char *min_timestamp = apr_dbd_get_entry(driver, row, cur++);
+        const char *max_timestamp = apr_dbd_get_entry(driver, row, cur++);
         const char *url = apr_dbd_get_entry(driver, row, cur++);
+        const char *audit_status;
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                     "Log config: Record %s, public key file %s, audit status %s, URL %s",
+                     "Log config: Record %s, log id %s, public key file %s, distrusted %s, URL %s, time %s->%s",
                      id,
+                     log_id ? log_id : "(unset)",
                      public_key ? public_key : "(unset)",
-                     audit_status ? audit_status : "(unset, defaults to trusted)",
-                     url ? url : "(unset)");
+                     distrusted ? distrusted : "(unset, defaults to trusted)",
+                     url ? url : "(unset)",
+                     min_timestamp ? min_timestamp : "-INF",
+                     max_timestamp ? max_timestamp : "+INF");
+
+        /* convert to old format */
+        if (distrusted) {
+            if (!strcmp(distrusted, "0")) {
+                audit_status = "T";
+            }
+            else {
+                /* no verification of actual data from db */
+                audit_status = "F";
+            }
+        }
+        else {
+            audit_status = NULL;
+        }
 
         rv = save_log_config_entry(log_config, p,
                                    public_key, audit_status, url);

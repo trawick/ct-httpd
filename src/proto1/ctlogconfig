@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import os
+import re
 import sqlite3
 import sys
 
@@ -26,8 +27,11 @@ def create_tables(db_name):
 
     cur.execute('CREATE TABLE loginfo('
               + 'id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, '
+              + 'log_id TEXT, '
               + 'public_key TEXT, '  # path to PEM-encoded file
-              + 'audit_status TEXT, '  # 'F' for Failed-audit
+              + 'distrusted INTEGER, '  # non-zero if not trusted
+              + 'min_valid_timestamp INTEGER, '
+              + 'max_valid_timestamp INTEGER, '
               + 'url TEXT)') 
     cur.close()
     cxn.commit()
@@ -51,6 +55,17 @@ def record_id_arg(cur, args, required=False):
     return record_id
 
 
+def log_id_arg(cur, args):
+    if len(args) < 1 or len(args[0]) != 64:
+        print >> sys.stderr, 'A log id was not provided'
+        sys.exit(1)
+    log_id = args.pop(0).upper()
+    if len(re.compile(r'[A-Z0-9]').findall(log_id)) != len(log_id):
+        print >> sys.stderr, 'The log id is not formatted properly'
+        sys.exit(1)
+    return log_id
+
+
 def public_key_arg(args):
     if len(args) < 1:
         print >> sys.stderr, 'A public key file was not provided'
@@ -60,6 +75,20 @@ def public_key_arg(args):
         print >> sys.stderr, 'Public key file %s could not be read' % pubkey
         sys.exit(1)
     return pubkey
+
+
+def time_arg(args):
+    if len(args) < 1:
+        print >> sys.stderr, 'A timestamp was not provided'
+        sys.exit(1)
+    t = args.pop(0)
+    if t == '-':
+        return None
+    try:
+        return int(t)
+    except ValueError:
+        print >> sys.stderr, 'The timestamp "%s" is invalid' % t
+        sys.exit(1)
 
 
 def configure_public_key(cur, args):
@@ -97,53 +126,90 @@ def forget_log(cur, args):
 
 
 def trust_distrust_log(cur, args):
-    record_id = record_id_arg(cur, args, True)
+    # could take a record id or a log id
+    record_id = record_id_arg(cur, args, False)
+    if record_id:
+        log_id = None
+    else:
+        log_id = log_id_arg(cur, args)
+
     if len(args) != 1:
         usage()
     flag = args.pop(0)
-    stmt = 'UPDATE loginfo SET audit_status = ? WHERE id = ?'
-    cur.execute(stmt, [flag, record_id])
+
+    if not record_id:
+        stmt = 'INSERT INTO loginfo (log_id, distrusted) VALUES(?, ?)'
+        cur.execute(stmt, [log_id, flag])
+    else:
+        stmt = 'UPDATE loginfo SET distrusted = ? WHERE id = ?'
+        cur.execute(stmt, [flag, record_id])
 
 
 def trust_log(cur, args):
-    trust_distrust_log(cur, args + ['T'])
+    trust_distrust_log(cur, args + [0])
 
 
 def distrust_log(cur, args):
-    trust_distrust_log(cur, args + ['F'])
+    trust_distrust_log(cur, args + [1])
 
+
+def time_range(cur, args):
+    # could take a record id or a log id
+    record_id = record_id_arg(cur, args, False)
+    if record_id:
+        log_id = None
+    else:
+        log_id = log_id_arg(cur, args)
+
+    min_valid_time = time_arg(args)
+    max_valid_time = time_arg(args)
+    if len(args) != 0:
+        usage()
+    if not record_id:
+        stmt = 'INSERT INTO loginfo (log_id, min_valid_timestamp, max_valid_timestamp) VALUES(?, ?, ?)'
+        cur.execute(stmt, [log_id, min_valid_time, max_valid_time])
+    else:
+        stmt = 'UPDATE loginfo SET min_valid_timestamp = ?, max_valid_timestamp = ? WHERE id = ?'
+        cur.execute(stmt, [min_valid_time, max_valid_time, record_id])
+
+
+class ConfigEntry:
+
+    pass
+
+def dump_ll(cur):
+    stmt = 'SELECT * FROM loginfo'
+    cur.execute(stmt)
+    recs = []
+    for row in cur.fetchall():
+        obj = ConfigEntry()
+        obj.id = row[0]
+        obj.log_id = row[1]
+        obj.public_key = row[2]
+        obj.distrusted = row[3]
+        obj.min_valid_timestamp = row[4]
+        obj.max_valid_timestamp = row[5]
+        obj.url = row[6]
+        recs += [obj]
+    return recs
 
 def dump(cur, args):
     if len(args) != 0:
         usage()
-    stmt = 'SELECT * FROM loginfo'
-    cur.execute(stmt)
-    for row in cur.fetchall():
-        if row[1]:
-            pubkey = row[1]
-        else:
-            pubkey = '(not configured)'
-        if row[2]:
-            if row[2].upper() == 'F':
-                status = 'DISTRUSTED'
-            elif row[2].upper() == 'T':
-                status = 'trusted'
-            else:
-                # blow up, unexpected value
-                assert row[2].upper() == 'F'
-                status = 'junk'  # quiet lint
-        else:
-            status = 'trusted (by default)'
+    recs = dump_ll(cur)
+    for rec in recs:
+        not_conf = '(not configured)'
 
-        if row[3]:
-            url = row[3]
-        else:
-            url = '(not configured)'
         print 'Log entry:'
-        print '  Record ' + str(row[0])
-        print '  Status         : ' + status
-        print '  Public key file: ' + pubkey
-        print '  URL            : ' + url
+        print '  Record ' + str(rec.id) + \
+            (' (DISTRUSTED)' if rec.distrusted else '')
+        print '  Log id         : ' + (rec.log_id if rec.log_id else not_conf)
+        print '  Public key file: ' + (rec.public_key if rec.public_key else not_conf)
+        print '  URL            : ' + (rec.url if rec.url else not_conf)
+        print '  Time range     : ' + \
+            (str(rec.min_valid_timestamp) if rec.min_valid_timestamp else '-INF') + \
+            ' to ' + \
+            (str(rec.max_valid_timestamp) if rec.max_valid_timestamp else '+INF')
         print ''
 
 
@@ -153,6 +219,7 @@ def usage():
     print >> sys.stderr, '  dump                                                          display config-db contents'
     print >> sys.stderr, '  configure-public-key [record-id] /path/to/log-public-key.pem  configure public key'
     print >> sys.stderr, '  configure-url [record-id] http://www.example.com/path/        configure URL'
+    print >> sys.stderr, '  valid-time-range record-id min-range|-|= max-range|0|=        configure min and/or max valid timestamps'
     print >> sys.stderr, '  trust record-id                                               mark log as trusted (default)'
     print >> sys.stderr, '  distrust record-id                                            mark log as untrusted'
     print >> sys.stderr, '  forget record-id                                              remove log from config-db'
@@ -162,19 +229,20 @@ def usage():
     sys.exit(1)
 
 
-def main():
-    if len(sys.argv) < 3:
+def main(argv):
+    if len(argv) < 3:
         usage()
 
-    db_name = sys.argv[1]
-    cmd = sys.argv[2]
-    args = sys.argv[3:]
+    db_name = argv[1]
+    cmd = argv[2]
+    args = argv[3:]
 
     cmds = {'configure-public-key': configure_public_key,
             'configure-url': configure_url,
             'distrust': distrust_log,
             'trust': trust_log,
             'forget': forget_log,
+            'valid-time-range': time_range,
             'dump': dump,
         }
 
@@ -200,4 +268,4 @@ def main():
     cxn.close()
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv)
