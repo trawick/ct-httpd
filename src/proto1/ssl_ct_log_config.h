@@ -22,15 +22,16 @@
 
 typedef struct ct_log_config {
     const char *log_id; /* binary form */
-    const char *url;
     const char *public_key_pem;
+    EVP_PKEY *public_key;
+#define DISTRUSTED_UNSET -1
+#define TRUSTED           0
+#define DISTRUSTED        1
+    int distrusted;
+    apr_time_t min_valid_time, max_valid_time;
+    const char *url;
     const char *uri_str;
     apr_uri_t uri;
-    EVP_PKEY *public_key;
-#define TRUSTED_UNSET      -1
-#define DISTRUSTED          0
-#define TRUSTED             1
-    int trusted;
 } ct_log_config;
 
 int log_config_readable(apr_pool_t *p, const char *logconfig,
@@ -42,8 +43,11 @@ apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
 
 apr_status_t save_log_config_entry(apr_array_header_t *log_config,
                                    apr_pool_t *p,
+                                   const char *log_id,
                                    const char *pubkey_fname,
-                                   const char *audit_status,
+                                   const char *distrusted,
+                                   const char *min_time,
+                                   const char *max_time,
                                    const char *url);
 
 #endif /* SSL_CT_LOG_CONFIG_H */

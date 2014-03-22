@@ -548,7 +548,7 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
     config_elts  = (ct_log_config **)log_config->elts;
 
     for (i = 0; i < log_config->nelts; i++) {
-        if (config_elts[i]->trusted == DISTRUSTED) {
+        if (config_elts[i]->distrusted == DISTRUSTED) {
             continue;
         }
         if (!config_elts[i]->uri_str) {
@@ -584,7 +584,7 @@ static int uri_in_config(const char *needle, const apr_array_header_t *haystack)
 
     elts = (ct_log_config **)haystack->elts;
     for (i = 0; i < haystack->nelts; i++) {
-        if (elts[i]->trusted == DISTRUSTED) {
+        if (elts[i]->distrusted == DISTRUSTED) {
             continue;
         }
         if (!elts[i]->uri_str) {
@@ -738,7 +738,7 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
     }
 
     for (i = 0; i < log_config->nelts; i++) {
-        if (config_elts[i]->trusted == DISTRUSTED) {
+        if (config_elts[i]->distrusted == DISTRUSTED) {
             continue;
         }
         if (!config_elts[i]->url) {
@@ -2558,7 +2558,8 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
 {
     apr_status_t rv;
     const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
-    const char *public_key, *audit_status, *url;
+    const char *log_id, *public_key, *distrusted, *min_valid_time,
+        *max_valid_time, *url;
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
     int cur_arg;
@@ -2567,19 +2568,34 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
         return err;
     }
 
-    if (argc != 3) {
-        return "CTStaticLogConfig: 3 arguments are required";
+    if (argc != 6) {
+        return "CTStaticLogConfig: 6 arguments are required";
     }
 
     cur_arg = 0;
+    log_id = argv[cur_arg++];
+    if (!strcmp(log_id, "-")) {
+        log_id = NULL;
+    }
+
     public_key = argv[cur_arg++];
     if (!strcmp(public_key, "-")) {
         public_key = NULL;
     }
     
-    audit_status = argv[cur_arg++];
-    if (!strcmp(audit_status, "-")) {
-        audit_status = NULL;
+    distrusted = argv[cur_arg++];
+    if (!strcmp(distrusted, "-")) {
+        distrusted = NULL;
+    }
+
+    min_valid_time = argv[cur_arg++];
+    if (!strcmp(min_valid_time, "-")) {
+        min_valid_time = NULL;
+    }
+
+    max_valid_time = argv[cur_arg++];
+    if (!strcmp(max_valid_time, "-")) {
+        max_valid_time = NULL;
     }
 
     url = argv[cur_arg++];
@@ -2592,7 +2608,8 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
             apr_array_make(cmd->pool, 2, sizeof(ct_log_config *));
     }
     rv = save_log_config_entry(sconf->static_log_config, cmd->pool,
-                               public_key, audit_status, url);
+                               log_id, public_key, distrusted, 
+                               min_valid_time, max_valid_time, url);
     if (rv != APR_SUCCESS) {
         return "Error processing static log configuration";
     }

@@ -15,6 +15,8 @@
  */
 
 #include "apr_dbd.h"
+#include "apr_escape.h"
+#include "apr_strings.h"
 
 #include "httpd.h"
 #include "http_log.h"
@@ -157,32 +159,67 @@ static apr_status_t parse_log_url(apr_pool_t *p, const char *lu, apr_uri_t *puri
     return rv;
 }
 
+static apr_status_t parse_time_str(apr_pool_t *p, const char *time_str,
+                                   apr_time_t *time)
+{
+    apr_int64_t val;
+    const char *end;
+
+    errno = 0;
+    val = apr_strtoi64(time_str, (char **)&end, 10);
+    if (errno || *end != '\0') {
+        return APR_EINVAL;
+    }
+
+    *time = apr_time_from_msec(val);
+    return APR_SUCCESS;
+}
+
 /* The log_config array should have already been allocated from p. */
 apr_status_t save_log_config_entry(apr_array_header_t *log_config,
                                    apr_pool_t *p,
+                                   const char *log_id,
                                    const char *pubkey_fname,
-                                   const char *audit_status,
+                                   const char *distrusted_str,
+                                   const char *min_time_str,
+                                   const char *max_time_str,
                                    const char *url)
 {
+    apr_size_t len;
     apr_status_t rv;
+    apr_time_t min_time, max_time;
     apr_uri_t uri;
+    char *log_id_bin;
     ct_log_config *newconf, **pnewconf;
-    int trusted;
+    int distrusted;
     EVP_PKEY *public_key;
 
-    if (!audit_status) {
-        trusted = TRUSTED_UNSET;
+    if (!distrusted_str) {
+        distrusted = DISTRUSTED_UNSET;
     }
-    else if (!strcasecmp(audit_status, "F")) {
-        trusted = DISTRUSTED;
+    else if (!strcasecmp(distrusted_str, "1")) {
+        distrusted = DISTRUSTED;
     }
-    else if (!strcasecmp(audit_status, "T")) {
-        trusted = TRUSTED;
+    else if (!strcasecmp(distrusted_str, "0")) {
+        distrusted = DISTRUSTED;
     }
     else {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
-                     "Audit status \"%s\" not valid", audit_status);
+                     "Trusted status \"%s\" not valid", distrusted_str);
         return APR_EINVAL;
+    }
+
+    if (log_id) {
+        rv = apr_unescape_hex(NULL, log_id, strlen(log_id), 0, &len);
+        if (rv != 0 || len != 32) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Log id \"%s\" not valid", log_id);
+            log_id_bin = apr_palloc(p, len);
+            apr_unescape_hex(log_id_bin, log_id, strlen(log_id), 0, NULL);
+        }
+    }
+    else {
+        log_id_bin = NULL;
     }
 
     if (pubkey_fname) {
@@ -193,6 +230,30 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
     }
     else {
         public_key = NULL;
+    }
+
+    if (min_time_str) {
+        rv = parse_time_str(p, min_time_str, &min_time);
+        if (rv) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Invalid min time \"%s\"", min_time_str);
+            return rv;
+        }
+    }
+    else {
+        min_time = 0;
+    }
+
+    if (max_time_str) {
+        rv = parse_time_str(p, max_time_str, &max_time);
+        if (rv) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Invalid max time \"%s\"", max_time_str);
+            return rv;
+        }
+    }
+    else {
+        max_time = 0;
     }
 
     if (url) {
@@ -206,7 +267,8 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
     pnewconf = (ct_log_config **)apr_array_push(log_config);
     *pnewconf = newconf;
 
-    newconf->trusted = trusted;
+    newconf->log_id = log_id_bin;
+    newconf->distrusted = distrusted;
     newconf->public_key = public_key;
 
     if (newconf->public_key) {
@@ -214,6 +276,9 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
         digest_public_key(newconf->public_key,
                           (unsigned char *)newconf->log_id);
     }
+
+    newconf->min_valid_time = min_time;
+    newconf->max_valid_time = max_time;
 
     newconf->url = url;
     if (url) {
@@ -293,7 +358,6 @@ apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
         const char *min_timestamp = apr_dbd_get_entry(driver, row, cur++);
         const char *max_timestamp = apr_dbd_get_entry(driver, row, cur++);
         const char *url = apr_dbd_get_entry(driver, row, cur++);
-        const char *audit_status;
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
                      "Log config: Record %s, log id %s, public key file %s, distrusted %s, URL %s, time %s->%s",
@@ -305,22 +369,9 @@ apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
                      min_timestamp ? min_timestamp : "-INF",
                      max_timestamp ? max_timestamp : "+INF");
 
-        /* convert to old format */
-        if (distrusted) {
-            if (!strcmp(distrusted, "0")) {
-                audit_status = "T";
-            }
-            else {
-                /* no verification of actual data from db */
-                audit_status = "F";
-            }
-        }
-        else {
-            audit_status = NULL;
-        }
-
-        rv = save_log_config_entry(log_config, p,
-                                   public_key, audit_status, url);
+        rv = save_log_config_entry(log_config, p, log_id,
+                                   public_key, distrusted, 
+                                   min_timestamp, max_timestamp, url);
         if (rv != APR_SUCCESS) {
             apr_dbd_close(driver, handle);
             return rv;
