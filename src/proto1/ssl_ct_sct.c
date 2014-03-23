@@ -20,6 +20,8 @@
 
 #include "http_log.h"
 
+APLOG_USE_MODULE(ssl_ct);
+
 static apr_status_t verify_signature(sct_fields_t *sctf,
                                      EVP_PKEY *pkey)
 {

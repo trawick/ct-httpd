@@ -25,6 +25,8 @@
 #include "ssl_ct_sct.h"
 #include "ssl_ct_log_config.h"
 
+APLOG_USE_MODULE(ssl_ct);
+
 int log_config_readable(apr_pool_t *p, const char *logconfig,
                         const char **msg)
 {
