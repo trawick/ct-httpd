@@ -50,4 +50,8 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
                                    const char *max_time,
                                    const char *url);
 
+int log_valid_for_sent_sct(const ct_log_config *l);
+
+int log_valid_for_received_sct(const ct_log_config *l, apr_time_t to_check);
+
 #endif /* SSL_CT_LOG_CONFIG_H */

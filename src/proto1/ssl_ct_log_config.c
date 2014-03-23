@@ -389,3 +389,29 @@ apr_status_t read_config_db(apr_pool_t *p, server_rec *s_main,
     return APR_SUCCESS;
 }
 
+int log_valid_for_received_sct(const ct_log_config *l, apr_time_t to_check)
+{
+    if (l->distrusted == DISTRUSTED) {
+        return 0;
+    }
+
+    if (l->max_valid_time && l->max_valid_time < to_check) {
+        return 0;
+    }
+
+    if (l->min_valid_time && l->min_valid_time < to_check) {
+        return 0;
+    }
+
+    return 1;
+}
+
+int log_valid_for_sent_sct(const ct_log_config *l)
+{
+    /* The log could return us an SCT with an older timestamp which
+     * is within the trusted time interval for the log, but for
+     * simplicity let's just assume that if the log isn't still
+     * within a trusted interval we won't send SCTs from the log.
+     */
+    return log_valid_for_received_sct(l, apr_time_now());
+}

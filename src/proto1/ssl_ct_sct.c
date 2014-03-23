@@ -61,9 +61,9 @@ apr_status_t sct_verify_signature(conn_rec *c, sct_fields_t *sctf,
         }
 
         if (!memcmp(logid, sctf->logid, LOG_ID_SIZE)) {
-            if (config_elts[i]->distrusted == DISTRUSTED) {
+            if (!log_valid_for_received_sct(config_elts[i], sctf->time)) {
                 ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
-                              "Got SCT from distrusted log");
+                              "Got SCT from distrusted log, or out of trusted time interval");
                 return APR_EINVAL;
             }
             rv = verify_signature(sctf, pubkey);

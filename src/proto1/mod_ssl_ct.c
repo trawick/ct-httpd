@@ -548,10 +548,10 @@ static apr_status_t record_log_urls(server_rec *s, apr_pool_t *p,
     config_elts  = (ct_log_config **)log_config->elts;
 
     for (i = 0; i < log_config->nelts; i++) {
-        if (config_elts[i]->distrusted == DISTRUSTED) {
+        if (!config_elts[i]->uri_str) {
             continue;
         }
-        if (!config_elts[i]->uri_str) {
+        if (!log_valid_for_sent_sct(config_elts[i])) {
             continue;
         }
         rv = apr_file_puts(config_elts[i]->uri_str, f);
@@ -584,10 +584,10 @@ static int uri_in_config(const char *needle, const apr_array_header_t *haystack)
 
     elts = (ct_log_config **)haystack->elts;
     for (i = 0; i < haystack->nelts; i++) {
-        if (elts[i]->distrusted == DISTRUSTED) {
+        if (!elts[i]->uri_str) {
             continue;
         }
-        if (!elts[i]->uri_str) {
+        if (!log_valid_for_sent_sct(elts[i])) {
             continue;
         }
         if (!strcmp(needle, elts[i]->uri_str)) {
@@ -738,10 +738,10 @@ static apr_status_t refresh_scts_for_cert(server_rec *s, apr_pool_t *p,
     }
 
     for (i = 0; i < log_config->nelts; i++) {
-        if (config_elts[i]->distrusted == DISTRUSTED) {
+        if (!config_elts[i]->url) {
             continue;
         }
-        if (!config_elts[i]->url) {
+        if (!log_valid_for_sent_sct(config_elts[i])) {
             continue;
         }
         rv = fetch_sct(s, p, cert_fn,
