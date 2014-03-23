@@ -40,16 +40,16 @@ The primary sources of SCTs sent to clients in server mode are
 
 In addition, the administrator can statically configure one or more SCTs for a particular server certificate.  This is configured by using the CTStaticSCTs directive to associate a directory maintained by the administrator with a server certificate; any files in that directory with extension .sct will also be sent when the certificate is used.
 
-The base SCT directory is configured with the CTSCTStorage directive, and the certificate-specific directory name is the lower-case hex encoding of the SHA-256 hash of the DER form of the server leaf certificate.  This directory will contain SCTs received from configured logs.
-
-The number of SCTs sent in the ServerHello (i.e., not including those in a certificate extension or stapled OCSP response) can be limited by the CTServerHelloSCTLimit direcive.
+At run-time, a tree of directories contains SCTs fetched from logs as well as a SCT list built from fetched and configured SCTs.  The base of this directory tree is configured with the CTSCTStorage directive, and the certificate-specific directory name is the lower-case hex encoding of the SHA-256 hash of the DER form of the server leaf certificate.
 
 Server processing overview
 ==========================
 
-Basically the server wants to send SCTs to the client.  SCTs in a certificate extension or stapled OCSP response will be sent without any special program logic.  The new processing handles sending SCTs configured by the administrator or received from known logs in the ServerHello.
+The server wants to send SCTs to the client.  SCTs in a certificate extension or stapled OCSP response will be sent without any special program logic.  The new processing handles sending SCTs configured by the administrator or received from known logs in the ServerHello.
 
-For each server certificate, a daemon process maintains an SCT list to be sent in the ServerHello, created from statically configured SCTs as well as those received from logs.  Logs marked as untrusted will be ignored.  Periodically the daemon will submit certificates to a log as necessary (due to changed log configuration or age) and rebuild the concatenation of SCTs.
+The number of SCTs sent in the ServerHello (i.e., not including those in a certificate extension or stapled OCSP response) can be limited by the CTServerHelloSCTLimit direcive.
+
+For each server certificate, a daemon process maintains an SCT list to be sent in the ServerHello, created from statically configured SCTs as well as those received from logs.  Logs marked as untrusted or with a maximum valid timestamp before the present time will be ignored.  Periodically the daemon will submit certificates to a log as necessary (due to changed log configuration or age) and rebuild the concatenation of SCTs.
 
 The SCT list for a server certificate will be sent to any client that indicates awareness in the ClientHello when that particular server certificate is used.
 
@@ -60,12 +60,12 @@ The proxy indicates CT awareness in the ClientHello by including the signed\_cer
 
 On-line verification is attempted for each received SCT:
 
-* for any SCT, the timestamp can be checked to see if it is not yet valid
+* for any SCT, the timestamp can be checked to see if it is not yet valid based on the current time as well as any configured valid time interval for the log
 * for an SCT from a log for which a public key is configured, the server signature can be checked
 
 If verification fails for at least one SCT and verification was not successful for at least one SCT, the connection is aborted.
 
-Additionally, the server certificate chain and SCTs are stored for off-line verification (not yet working).  Off-line verification should be able to mark a log as untrusted.
+Additionally, the server certificate chain and SCTs are stored for off-line verification.
 
 As an optimization, on-line verification and storing of data from the server is only performed the first time a web server child process receives the data.  This saves some processing time as well as disk space.  For typical reverse proxy setups, very little processing overhead will be required.
 
@@ -99,9 +99,9 @@ Configuration
 Configure mod\_ssl\_ct like this:
 ```
     LoadModule ssl_ct_module modules/mod_ssl_ct.so
-    CTStaticLogConfig - - http://localhost:8888/
-    CTStaticLogConfig - - http://otherhost:9999/
-    CTStaticLogConfig /path/to/log-public-key.pem - -
+    CTStaticLogConfig - - - - - http://localhost:8888/
+    CTStaticLogConfig - - - - - http://otherhost:9999/
+    CTStaticLogConfig - /path/to/log-public-key.pem - - - -
     CTAuditStorage /tmp/audit
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
