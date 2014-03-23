@@ -189,7 +189,7 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
     apr_status_t rv;
     apr_time_t min_time, max_time;
     apr_uri_t uri;
-    char *log_id_bin;
+    char *computed_log_id = NULL, *log_id_bin = NULL;
     ct_log_config *newconf, **pnewconf;
     int distrusted;
     EVP_PKEY *public_key;
@@ -217,9 +217,6 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
             log_id_bin = apr_palloc(p, len);
             apr_unescape_hex(log_id_bin, log_id, strlen(log_id), 0, NULL);
         }
-    }
-    else {
-        log_id_bin = NULL;
     }
 
     if (pubkey_fname) {
@@ -267,15 +264,24 @@ apr_status_t save_log_config_entry(apr_array_header_t *log_config,
     pnewconf = (ct_log_config **)apr_array_push(log_config);
     *pnewconf = newconf;
 
-    newconf->log_id = log_id_bin;
     newconf->distrusted = distrusted;
     newconf->public_key = public_key;
 
     if (newconf->public_key) {
-        newconf->log_id = apr_palloc(p, LOG_ID_SIZE);
+        computed_log_id = apr_palloc(p, LOG_ID_SIZE);
         digest_public_key(newconf->public_key,
-                          (unsigned char *)newconf->log_id);
+                          (unsigned char *)computed_log_id);
     }
+
+    if (computed_log_id && log_id_bin) {
+        if (memcmp(computed_log_id, log_id_bin, LOG_ID_SIZE)) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                         "Provided log id doesn't match digest of public key");
+            return APR_EINVAL;
+        }
+    }
+
+    newconf->log_id = log_id_bin ? log_id_bin : computed_log_id;
 
     newconf->min_valid_time = min_time;
     newconf->max_valid_time = max_time;
