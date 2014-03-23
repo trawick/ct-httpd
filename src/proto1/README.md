@@ -29,6 +29,12 @@ Proxy mode uses the public key in order to verify the signature of SCTs it recei
 
 Proxy mode checks the general purpose "distrusted" flag as well as interval of valid timestamps of a log to determine if an SCT is from a log known to be untrusted.
 
+## Use of log configuration by off-line verification
+
+A log URL can be specified for a log id, so that verification of an SCT from that log uses the specified URL rather than the default.
+
+**This feature is not yet implemented in the off-line verification program.**
+
 SCT configuration
 =================
 

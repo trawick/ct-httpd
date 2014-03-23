@@ -75,6 +75,21 @@ class TestConfigCommand(unittest.TestCase):
         self.assertEqual(rec.max_valid_timestamp, None)
         self.assertEqual(rec.url, test_url_2)
 
+    def test_url_by_log_id_configuration(self):
+        test_url_1 = 'https://log.example.com/foo'
+        log_id_1 = 'C0FE' * 16
+        ctlogconfig.configure_url(self.cur, [log_id_1, test_url_1])
+        recs = ctlogconfig.dump_ll(self.cur)
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertEqual(rec.id, 1)
+        self.assertEqual(rec.log_id, log_id_1)
+        self.assertEqual(rec.public_key, None)
+        self.assertEqual(rec.distrusted, None)
+        self.assertEqual(rec.min_valid_timestamp, None)
+        self.assertEqual(rec.max_valid_timestamp, None)
+        self.assertEqual(rec.url, test_url_1)
+
     def test_key_configuration(self):
         # 1. Configure public key (new entry)
         ctlogconfig.configure_public_key(self.cur,

@@ -57,8 +57,10 @@ def record_id_arg(cur, args, required=False):
     return record_id
 
 
-def log_id_arg(cur, args):
+def log_id_arg(cur, args, required=True):
     if len(args) < 1 or len(args[0]) != 64:
+        if not required:
+            return None
         print >> sys.stderr, 'A log id was not provided'
         sys.exit(1)
     log_id = args.pop(0).upper()
@@ -107,14 +109,24 @@ def configure_public_key(cur, args):
 
 
 def configure_url(cur, args):
+    log_id = None
     record_id = record_id_arg(cur, args, False)
+    if not record_id:
+        log_id = log_id_arg(cur, args, False)
     if len(args) != 1:
         usage()
     url = args.pop(0)
     if not record_id:
-        stmt = 'INSERT INTO loginfo (url) VALUES(?)'
-        cur.execute(stmt, [url])
+        if log_id:
+            stmt = 'INSERT INTO loginfo (log_id, url) VALUES(?, ?)'
+            args = [log_id, url]
+        else:
+            stmt = 'INSERT INTO loginfo (url) VALUES(?)'
+            args = [url]
+        cur.execute(stmt, args)
     else:
+        if log_id:
+            usage()
         stmt = 'UPDATE loginfo SET url = ? WHERE id = ?'
         cur.execute(stmt, [url, record_id])
 
