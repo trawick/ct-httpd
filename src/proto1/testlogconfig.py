@@ -15,6 +15,7 @@ db_name = '/tmp/test_db'
 public_key_file_1 = 'test-public-key-1.pem'
 public_key_file_2 = 'test-public-key-2.pem'
 
+
 class TestConfigCommand(unittest.TestCase):
 
     def setUp(self):
@@ -143,7 +144,7 @@ class TestConfigCommand(unittest.TestCase):
         self.assertEqual(rec.min_valid_timestamp, None)
         self.assertEqual(rec.max_valid_timestamp, None)
         self.assertEqual(rec.url, None)
-        
-        
+
+
 if __name__ == '__main__':
     unittest.main()
