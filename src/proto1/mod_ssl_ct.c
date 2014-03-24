@@ -1237,8 +1237,8 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
                                   SERVERCERTS_BASENAME, p, s);
             ap_assert(rv == APR_SUCCESS);
 
-            concat = fopen(servercerts_pem, "wb");
-            ap_assert(concat);
+            rv = ctutil_fopen(servercerts_pem, "wb", &concat);
+            ap_assert(rv == APR_SUCCESS);
 
             ap_assert(1 == PEM_write_X509(concat, x)); /* leaf */
 
@@ -2632,9 +2632,8 @@ static const char *ct_static_scts(cmd_parms *cmd, void *x, const char *cert_fn,
         return err;
     }
 
-    pemfile = fopen(cert_fn, "r");
-    if (!pemfile) {
-        rv = errno; /* Unix-ism! */
+    rv = ctutil_fopen(cert_fn, "r", &pemfile);
+    if (rv != APR_SUCCESS) {
         return apr_psprintf(p, "could not open certificate file %s (%pm)",
                             cert_fn, &rv);
     }

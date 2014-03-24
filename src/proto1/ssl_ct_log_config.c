@@ -24,6 +24,7 @@
 
 #include "ssl_ct_sct.h"
 #include "ssl_ct_log_config.h"
+#include "ssl_ct_util.h"
 
 APLOG_USE_MODULE(ssl_ct);
 
@@ -80,9 +81,8 @@ static apr_status_t read_public_key(apr_pool_t *p, const char *pubkey_fname,
 
     *ppkey = NULL;
 
-    pubkeyf = fopen(pubkey_fname, "r");
-    if (!pubkeyf) {
-        rv = errno; /* Unix-ism! */
+    rv = ctutil_fopen(pubkey_fname, "r", &pubkeyf);
+    if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, ap_server_conf,
                      "could not open log public key file %s",
                      pubkey_fname);

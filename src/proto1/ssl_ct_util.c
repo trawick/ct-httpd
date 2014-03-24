@@ -106,6 +106,21 @@ int ctutil_in_array(const char *needle, const apr_array_header_t *haystack)
     return 0;
 }
 
+apr_status_t ctutil_fopen(const char *fn, const char *mode, FILE **f)
+{
+    apr_status_t rv;
+
+    *f = fopen(fn, mode);
+    if (*f == NULL) {
+        rv = errno; /* XXX Windows equivalent -- CreateFile + fdopen? */
+    }
+    else {
+        rv = APR_SUCCESS;
+    }
+
+    return rv;
+}
+
 /* read_dir() is remarkably like apr_match_glob(), which could
  * probably use some processing flags to indicate variations on
  * the basic behavior (and implement better error checking).
