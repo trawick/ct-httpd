@@ -81,9 +81,11 @@ As an optimization, on-line verification and storing of data from the server is 
 * The individual files for audit, specific to one httpd child process, will not have duplicates (i.e., multiple occurrences of the exact same server certificate/chain and set of SCTs), though there can be duplicates among files for different httpd child processes.
 * The off-line audit procedure should move the .out files elsewhere and audit the contents.  These .out files will grow unbounded for the life of the server if the set of unique server certificates + SCTs is unbounded.
   * Currently a configuration mechanism to control the unbounded storage growth does not exist.
-* The file contains a series of elements for each server: SERVER_START (0x0001), certificate data (leaf first followed by any intermediate certificates), and SCT data.
-* Each certificate is represented by CERT_START (0x0002) and three-byte length followed by the certificate in DER.
-* Each SCT is represented by SCT_START (0x0003) and two-byte length followed by the SCT.
+* The file contains a series of elements for each server: SERVER_START (0x0001), a key which is unique for this combination of leaf certificate and SCTs, certificate data (leaf first followed by any intermediate certificates), and SCT data.  SCTs provided in the ServerHello, certificate extension, or stapled OCSP response will be stored.
+* The key is represented by KEY_START (0x0002) and two-byte length followed by the key.  While a particular audit file won't contain any duplicate data, duplicates are expected across the set of audit files, and the key can be used to quickly filter out duplicates.
+  * The key is currently the SHA-256 digest of the leaf certificate and set of SCTs, in printable hex format.
+* Each certificate is represented by CERT_START (0x0003) and three-byte length followed by the certificate in DER.
+* Each SCT is represented by SCT_START (0x0004) and two-byte length followed by the SCT.
 
 Build
 =====

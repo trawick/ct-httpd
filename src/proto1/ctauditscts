@@ -21,15 +21,16 @@ import struct
 import sys
 
 SERVER_START = 1
-CERT_START = 2
-SCT_START = 3
+KEY_START = 2
+CERT_START = 3
+SCT_START = 4
 
 def usage():
    print >> sys.stderr, 'Usage: %s /root/of/httpd/audit/files' % sys.argv[0]
    sys.exit(1)
 
 
-def audit(fn, tmp):
+def audit(fn, tmp, already_checked):
    print 'Auditing %s...' % fn
 
    tmp_leaf_der_fn = os.path.join(tmp, 'leaf.der.tmp')
@@ -49,6 +50,16 @@ def audit(fn, tmp):
       val = struct.unpack_from('>H', bytes, offset)
       assert val[0] == SERVER_START
       offset += 2
+
+      assert struct.unpack_from('>H', bytes, offset)[0] == KEY_START
+      offset += 2
+
+      key_size = struct.unpack_from('>h', bytes, offset)[0]
+      assert key_size > 0
+      offset += 2
+
+      key = bytes[offset:offset + key_size]
+      offset += key_size
 
       # at least one certificate
       assert struct.unpack_from('>H', bytes, offset)[0] == CERT_START
@@ -91,6 +102,12 @@ def audit(fn, tmp):
          #  If we ever need the full SCT: sct = (offset, sct_size)
          offset += sct_size
 
+         if key in already_checked:
+            print '  (SCTs already checked)'
+            continue
+
+         already_checked[key] = True
+
          cmd = 'verify_single_proof.py --cert %s --timestamp %s' % (tmp_leaf_pem_fn, timestamp_ms)
          print '>%s<' % cmd
          os.system(cmd)
@@ -102,10 +119,12 @@ def main():
    top = sys.argv[1]
    tmp = '/tmp'
 
+   already_checked = dict()
+
    for dirpath, dnames, fnames in os.walk(top):
       fnames = [fn for fn in fnames if fn[-4:] == '.out']
       for fn in fnames:
-         audit(os.path.join(dirpath, fn), tmp)
+         audit(os.path.join(dirpath, fn), tmp, already_checked)
 
 if __name__ == "__main__":
    main()

@@ -1580,11 +1580,13 @@ static apr_status_t validate_server_data(apr_pool_t *p, conn_rec *c,
  * and over.)
  */
 #define SERVER_START 0x0001
-#define CERT_START   0x0002
-#define SCT_START    0x0003
+#define KEY_START    0x0002
+#define CERT_START   0x0003
+#define SCT_START    0x0004
 
 static void save_server_data(conn_rec *c, cert_chain *cc,
-                             ct_conn_config *conncfg)
+                             ct_conn_config *conncfg,
+                             const char *key)
 {
     if (audit_file_mutex && audit_file) { /* child init successful, no
                                            * subsequent error
@@ -1610,6 +1612,19 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
 
             rv = ctutil_file_write_uint16(s, audit_file,
                                           SERVER_START);
+
+            if (rv == APR_SUCCESS) {
+                rv = ctutil_file_write_uint16(s, audit_file, KEY_START);
+            }
+
+            if (rv == APR_SUCCESS) {
+                rv = ctutil_file_write_uint16(s, audit_file, strlen(key));
+            }
+
+            if (rv == APR_SUCCESS) {
+                rv = apr_file_write_full(audit_file, key, strlen(key),
+                                         &bytes_written);
+            }
 
             /* Write each certificate, starting with leaf */
             x509elts = (X509 **)cc->cert_arr->elts;
@@ -1955,7 +1970,7 @@ static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
             ctutil_thread_mutex_unlock(cached_server_data_mutex);
 
             if (rv == APR_SUCCESS && !cached) {
-                save_server_data(c, conncfg->certs, conncfg);
+                save_server_data(c, conncfg->certs, conncfg, key);
             }
         }
         else {
