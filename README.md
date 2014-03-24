@@ -7,6 +7,8 @@ This describes possible implementations of Certificate Transparency in web and/o
 
 “Web server” in this document serves the role of “TLS server” while “proxy server” in this document serves the role as “TLS client.” 
 
+See [prototype 1 description](https://github.com/trawick/ct-httpd/blob/master/src/proto1/README.md) for what is actually implemented for Apache httpd today.
+
 Several "SSL variables" are referred to in the description.  Such variables are useful as information for web applications, for custom logging, and in some cases specific server processing can be triggered by specific values.  (These variables are often referred to as [environment variables](http://httpd.apache.org/docs/2.4/mod/mod_ssl.html#envvars), though in the case of mod_ssl they constitute a more general API.)
 
 # Log submission
