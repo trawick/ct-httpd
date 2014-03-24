@@ -18,8 +18,7 @@
  * Issues
  *
  * + Major limitations
- *   . need to ensure that audit data is written in a way that audit can be
- *     performed (ctauditscts is not yet working)
+ *   . ???
  *
  * + Known low-level code kludges/problems
  *   . proxy: an httpd child process validates SCTs from a server only on the
