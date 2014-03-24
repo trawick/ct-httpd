@@ -17,6 +17,7 @@
 
 import binascii
 import os
+import sqlite3
 import struct
 import sys
 
@@ -26,11 +27,12 @@ CERT_START = 3
 SCT_START = 4
 
 def usage():
-   print >> sys.stderr, 'Usage: %s /root/of/httpd/audit/files' % sys.argv[0]
+   print >> sys.stderr, 'Usage: %s /path/to/audit/files ' + \
+      '[/path/to/log-config-db]' % sys.argv[0]
    sys.exit(1)
 
 
-def audit(fn, tmp, already_checked):
+def audit(fn, tmp, already_checked, cur):
    print 'Auditing %s...' % fn
 
    tmp_leaf_der_fn = os.path.join(tmp, 'leaf.der.tmp')
@@ -95,7 +97,8 @@ def audit(fn, tmp, already_checked):
          offset += 2
          print '  SCT size:', hex(sct_size)
          log_id = bytes[offset + 1:offset + 1 + 32]
-         print '    Log id: %s' % binascii.hexlify(log_id)
+         log_id_hex = binascii.hexlify(log_id).upper()
+         print '    Log id: %s' % log_id_hex
          timestamp_ms = struct.unpack_from('>Q', bytes, offset + 33)[0]
          print '    Timestamp: %s' % timestamp_ms
 
@@ -108,16 +111,38 @@ def audit(fn, tmp, already_checked):
 
          already_checked[key] = True
 
-         cmd = 'verify_single_proof.py --cert %s --timestamp %s' % (tmp_leaf_pem_fn, timestamp_ms)
+         log_url_arg = ''
+         if cur:
+            stmt = 'SELECT * FROM loginfo WHERE log_id = ?'
+            cur.execute(stmt, [log_id_hex])
+            recs = list(cur.fetchall())
+            if len(recs) > 0 and recs[0][6] != None:
+               log_url = recs[0][6]
+
+               # verify_single_proof just wants the stuff after <scheme>://
+               if '://' in log_url:
+                  log_url = log_url.split('://')[1]
+               log_url_arg = '--log_url %s' % log_url
+
+               print 'Log URL: ' + log_url
+
+         cmd = 'verify_single_proof.py --cert %s --timestamp %s %s' % \
+               (tmp_leaf_pem_fn, timestamp_ms, log_url_arg)
          print '>%s<' % cmd
          os.system(cmd)
 
 def main():
-   if len(sys.argv) != 2:
+   if len(sys.argv) != 2 and len(sys.argv) != 3:
       usage()
 
    top = sys.argv[1]
    tmp = '/tmp'
+
+   if len(sys.argv) == 3:
+      cxn = sqlite3.connect(sys.argv[2])
+      cur = cxn.cursor()
+   else:
+      cur = None
 
    # could serialize this between runs to further limit duplicate checking
    already_checked = dict()
@@ -125,7 +150,7 @@ def main():
    for dirpath, dnames, fnames in os.walk(top):
       fnames = [fn for fn in fnames if fn[-4:] == '.out']
       for fn in fnames:
-         audit(os.path.join(dirpath, fn), tmp, already_checked)
+         audit(os.path.join(dirpath, fn), tmp, already_checked, cur)
 
 if __name__ == "__main__":
    main()

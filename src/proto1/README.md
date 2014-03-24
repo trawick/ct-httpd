@@ -18,6 +18,7 @@ The SQLite3 database is maintained by a command-line program (ctlogconfig).
 ## Configuration issues
 
 * The public key is currently configured as the name of a file containing the PEM encoding of the key, so the PEM file has to exist with the same lifetime as the configuration in order to use that.  It may be more useful to store the DER encoding of the public key directly in the database, while allowing the administrator to specify a PEM or DER-formatted file to be read.
+* ctlogconfig may allow the user to create multiple entries that describe the same log.  (Some duplicates could be detected.)
 
 ## Use of log configuration by server mode
 
@@ -32,8 +33,6 @@ Proxy mode checks the general purpose "distrusted" flag as well as interval of v
 ## Use of log configuration by off-line verification
 
 A log URL can be specified for a log id, so that verification of an SCT from that log uses the specified URL rather than the default.
-
-**This feature is not yet implemented in the off-line verification program.**
 
 SCT configuration
 =================
@@ -132,10 +131,10 @@ Configure mod\_ssl\_ct like this:
 * Set PYTHONPATH to find the necessary certificate-transparency libraries (probably just the src/python directory).  You may also have to add /usr/local/include if protobuf was installed to /usr/local.
 * Set PATH to include the certificate-transparency/src/python/ct/client/tools directory.
 * Run ctauditscts; the single required parameter is the value of the CTAuditStorage directive.
+  * Provide a path to a log config db if the log URL for a given log id can be obtained.  (If not found, a default will be used.)
 
 ## Issues
 
 * Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism, such that some administrators may want to maintain SCTs themselves to avoid installing much more code on a carefully maintained server.)
-* ctauditscts has no provision for passing verify\_single\_proof.py the server name and port of the log, so verification is dependent on the suitability of the default log coded in verify\_single\_proof.py (currently ct.googleapis.com/pilot).
 * verify\_single\_proof.py is itself not complete, but that is planned.
 * Logging of the results from verification is needed, along with a mechanism for reporting exceptions; this needs verify\_single\_proof to be completed.
