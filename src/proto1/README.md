@@ -126,32 +126,15 @@ Configure mod\_ssl\_ct like this:
 
 # Performing off-line auditing 
 
-* Apply this patch to the verify\_single\_proof script in the certificate-transparency tools:
-```
---- a/src/python/ct/client/tools/verify_single_proof.py
-+++ b/src/python/ct/client/tools/verify_single_proof.py
-@@ -40,7 +40,11 @@ def run():
- 
-     #TODO(eranm): Attempt fetching the SCT for this chain if none was given.
-     cert_sct = ct_pb2.SignedCertificateTimestamp()
--    cert_sct.ParseFromString(open(FLAGS.sct, 'rb').read())
-+    #cert_sct.ParseFromString(open(FLAGS.sct, 'rb').read())
-+    raw_sct = open(FLAGS.sct, 'rb').read()
-+    cert_sct.version = 0
-+    cert_sct.timestamp = struct.unpack_from('>Q', raw_sct, 2 + 33)[0]
-+
-     print 'SCT for cert:', cert_sct
- 
-     constructed_leaf = create_leaf(cert_sct.timestamp,
-```
+* Apply the patch in file verify\_single\_proof.patch to the verify\_single\_proof.py script in the certificate-transparency tools.
 * Set PYTHONPATH to find the necessary certificate-transparency libraries (probably just the src/python directory).  You may also have to add /usr/local/include if protobuf was installed to /usr/local.
 * Set PATH to include the certificate-transparency/src/python/ct/client/tools directory.
 * Run ctauditscts; the single required parameter is the value of the CTAuditStorage directive.
 
 ## Issues
 
-* Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism.)
-* ctauditscts has no provision for passing verify\_single\_proof.py the server name and port of the log.  Verification is dependent on the suitability of the default log coded in verify\_single\_proof.py (currently ct.googleapis.com/pilot).
+* Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism, such that some administrators may want to maintain SCTs themselves to avoid installing much more code on a carefully maintained server.)
+* ctauditscts has no provision for passing verify\_single\_proof.py the server name and port of the log, so verification is dependent on the suitability of the default log coded in verify\_single\_proof.py (currently ct.googleapis.com/pilot).
 * Some resolution is needed for the required patch to verify\_single\_proof.py once more important issues are resolved.
 * verify\_single\_proof.py is itself not complete, but that is planned.
-* Logging of the results from verification is needed, along with a mechanism for reporting exceptions.
+* Logging of the results from verification is needed, along with a mechanism for reporting exceptions this needs verify\_single\_proof to be completed.

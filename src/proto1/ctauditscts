@@ -34,7 +34,6 @@ def audit(fn, tmp):
 
    tmp_leaf_der_fn = os.path.join(tmp, 'leaf.der.tmp')
    tmp_leaf_pem_fn = os.path.join(tmp, 'leaf.pem.tmp')
-   tmp_sct_fn = os.path.join(tmp, 'sct.tmp')
 
    # First, parse the audit file into a series of related
    #
@@ -86,14 +85,13 @@ def audit(fn, tmp):
          print '  SCT size:', hex(sct_size)
          log_id = bytes[offset + 1:offset + 1 + 32]
          print '    Log id: %s' % binascii.hexlify(log_id)
-         sct = (offset, sct_size)
+         timestamp_ms = struct.unpack_from('>Q', bytes, offset + 33)[0]
+         print '    Timestamp: %s' % timestamp_ms
+
+         #  If we ever need the full SCT: sct = (offset, sct_size)
          offset += sct_size
 
-         with open(tmp_sct_fn, 'wb') as tmp_sct:
-            tmp_sct.write(bytes[len_offset:len_offset+2])
-            tmp_sct.write(bytes[sct[0]:sct[0]+sct[1]])
-
-         cmd = 'verify_single_proof.py --cert %s --sct %s' % (tmp_leaf_pem_fn, tmp_sct_fn)
+         cmd = 'verify_single_proof.py --cert %s --timestamp %s' % (tmp_leaf_pem_fn, timestamp_ms)
          print '>%s<' % cmd
          os.system(cmd)
 
