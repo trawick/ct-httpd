@@ -114,12 +114,24 @@ class TestConfigCommand(unittest.TestCase):
         self.assertEqual(rec.public_key, public_key_file_2)
 
     def test_forget(self):
+        log_id_1 = 'C0FE' * 16
+
         # 1. Configure public key (new entry)
         ctlogconfig.configure_public_key(self.cur,
                                          [public_key_file_1])
         recs = ctlogconfig.dump_ll(self.cur)
         self.assertEqual(len(recs), 1)
         ctlogconfig.forget_log(self.cur, ['#1'])
+        recs = ctlogconfig.dump_ll(self.cur)
+        self.assertEqual(len(recs), 0)
+
+        # 2. Distrust a log (new entry)
+        ctlogconfig.distrust_log(self.cur, [log_id_1])
+        recs = ctlogconfig.dump_ll(self.cur)
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].log_id, log_id_1)
+
+        ctlogconfig.forget_log(self.cur, [log_id_1])
         recs = ctlogconfig.dump_ll(self.cur)
         self.assertEqual(len(recs), 0)
 

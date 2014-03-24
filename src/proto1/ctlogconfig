@@ -132,11 +132,19 @@ def configure_url(cur, args):
 
 
 def forget_log(cur, args):
-    record_id = record_id_arg(cur, args, True)
+    record_id = record_id_arg(cur, args, False)
+    log_id = None
+    if not record_id:
+        log_id = log_id_arg(cur, args, True)
     if len(args) != 0:
         usage()
-    stmt = 'DELETE FROM loginfo WHERE id = ?'
-    cur.execute(stmt, [record_id])
+    if record_id:
+        stmt = 'DELETE FROM loginfo WHERE id = ?'
+        args = [record_id]
+    else:
+        stmt = 'DELETE FROM loginfo WHERE log_id = ?'
+        args = [log_id]
+    cur.execute(stmt, args)
 
 
 def trust_distrust_log(cur, args):
@@ -241,17 +249,19 @@ Commands:
   display config-db contents:
     dump
   configure public key:
-    configure-public-key [record-id] /path/log-pub-key.pem
+    configure-public-key [log-id|record-id] /path/log-pub-key.pem
   configure URL:
-    configure-url [record-id] http://www.example.com/path/
+    configure-url [log-id|record-id] http://www.example.com/path/
   configure min and/or max valid timestamps:
-    valid-time-range record-id min-range max-range
+    valid-time-range log-id|record-id min-range max-range
   mark log as trusted (default):
-    trust record-id
+    trust log-id|record-id
   mark log as untrusted:
-    distrust record-id
+    distrust log-id|record-id
   remove log config from config-db:
-    forget record-id
+    forget log-id|record-id
+
+log-id is a 64-character hex string representation of a log id
 
 record-id references an existing entry and is in the form:
   #<record-number>
