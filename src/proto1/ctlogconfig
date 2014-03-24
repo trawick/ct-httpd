@@ -109,6 +109,7 @@ def configure_public_key(cur, args):
 
 
 def configure_url(cur, args):
+    # can't specify more than one of record-id and log-id
     log_id = None
     record_id = record_id_arg(cur, args, False)
     if not record_id:
@@ -116,19 +117,18 @@ def configure_url(cur, args):
     if len(args) != 1:
         usage()
     url = args.pop(0)
-    if not record_id:
-        if log_id:
-            stmt = 'INSERT INTO loginfo (log_id, url) VALUES(?, ?)'
-            args = [log_id, url]
-        else:
-            stmt = 'INSERT INTO loginfo (url) VALUES(?)'
-            args = [url]
-        cur.execute(stmt, args)
-    else:
-        if log_id:
-            usage()
+
+    if record_id:
         stmt = 'UPDATE loginfo SET url = ? WHERE id = ?'
-        cur.execute(stmt, [url, record_id])
+        args = [url, record_id]
+    elif log_id:
+        stmt = 'INSERT INTO loginfo (log_id, url) VALUES(?, ?)'
+        args = [log_id, url]
+    else:
+        stmt = 'INSERT INTO loginfo (url) VALUES(?)'
+        args = [url]
+
+    cur.execute(stmt, args)
 
 
 def forget_log(cur, args):
