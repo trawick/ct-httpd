@@ -119,6 +119,7 @@ def main():
    top = sys.argv[1]
    tmp = '/tmp'
 
+   # could serialize this between runs to further limit duplicate checking
    already_checked = dict()
 
    for dirpath, dnames, fnames in os.walk(top):
