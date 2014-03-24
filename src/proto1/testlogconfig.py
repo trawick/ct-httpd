@@ -90,6 +90,15 @@ class TestConfigCommand(unittest.TestCase):
         self.assertEqual(rec.max_valid_timestamp, None)
         self.assertEqual(rec.url, test_url_1)
 
+        # ctauditscts should be able to query it like this:
+        stmt = 'SELECT * FROM loginfo WHERE log_id = ?'
+        self.cur.execute(stmt, [log_id_1])
+        recs = list(self.cur.fetchall())
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
+        self.assertEqual(rec[1], log_id_1)
+        self.assertEqual(rec[6], test_url_1)
+
     def test_key_configuration(self):
         # 1. Configure public key (new entry)
         ctlogconfig.configure_public_key(self.cur,
