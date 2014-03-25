@@ -38,8 +38,8 @@ start:
 stop:
 	$(APACHECTL) -k stop
 
-test: install
-	python testdotconf.py
+test:
+	./testlogconfig.py
 
 config:
 	python conf.py ssl_ct $(INST)
