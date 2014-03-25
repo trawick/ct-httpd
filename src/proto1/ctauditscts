@@ -21,6 +21,9 @@ import sqlite3
 import ssl
 import struct
 import sys
+import tempfile
+
+from contextlib import closing
 
 SERVER_START = 1
 KEY_START = 2
@@ -36,8 +39,6 @@ def usage():
 
 def audit(fn, tmp, already_checked, cur):
     print 'Auditing %s...' % fn
-
-    tmp_leaf_pem_fn = os.path.join(tmp, 'leaf.pem.tmp')
 
     # First, parse the audit file into a series of related
     #
@@ -79,8 +80,10 @@ def audit(fn, tmp, already_checked, cur):
             offset += der_size
 
         pem = ssl.DER_cert_to_PEM_cert(log_bytes[leaf[0]:leaf[0] + leaf[1]])
-        with open(tmp_leaf_pem_fn, 'w') as tmp_leaf_pem:
-            tmp_leaf_pem.write(pem)
+
+        tmp_leaf_pem = tempfile.mkstemp(text=True)
+        with closing(os.fdopen(tmp_leaf_pem[0], 'w')) as f:
+            f.write(pem)
 
         # at least one SCT
         assert struct.unpack_from('>H', log_bytes, offset)[0] == SCT_START
@@ -124,9 +127,11 @@ def audit(fn, tmp, already_checked, cur):
                     print '    Log URL: ' + log_url
 
             cmd = 'verify_single_proof.py --cert %s --timestamp %s %s' % \
-                  (tmp_leaf_pem_fn, timestamp_ms, log_url_arg)
+                  (tmp_leaf_pem[1], timestamp_ms, log_url_arg)
             print '>%s<' % cmd
             os.system(cmd)
+
+        os.unlink(tmp_leaf_pem[1])
 
 
 def main():
