@@ -29,9 +29,6 @@ pure-install: mod_ssl_ct.la
 	cp ctlogconfig ctauditscts $(INST)/bin
 	chmod 0755 $(INST)/cgi-bin/statuscgi.py
 
-TS := $(shell date)
-LINES := $(shell cat $(SOURCES) | grep -v '^$$' | wc -l)
-
 start:
 	$(APACHECTL) -k start
 
