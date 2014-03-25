@@ -21,6 +21,8 @@
  *   . ???
  *
  * + Known low-level code kludges/problems
+ *   . needs some work for Windows, primarily in implementing a parent thread
+ *     that runs the daemon process logic
  *   . proxy: an httpd child process validates SCTs from a server only on the
  *     first time the data is received; but it could fail once due to invalid
  *     timestamp and succeed later after time elapses; fixit!
@@ -216,7 +218,9 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
  *                  configured intermediate certificates
  *
  *   <rootdir>/<fingerprint>/logs  
- *                  List of log URLs, one per line
+ *                  List of log URLs, one per line; this is
+ *                  used to recognize when a log URL configuration
+ *                  change makes our current SCT set invalid
  *
  *   <rootdir>/<fingerprint>/AUTO_hostname_port_uri.sct
  *                  SCT for cert with this fingerprint
@@ -224,14 +228,23 @@ static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
  *                  of these)
  *
  *   <rootdir>/<fingerprint>/<anything>.sct
- *                  SCT maintained by the administrator
  *                  (file is optional; could be any number
  *                  of these; should not start with "AUTO_")
+ *                  Note that the administrator should store 
+ *                  statically maintained SCTs in a different
+ *                  directory for the server certificate (specified
+ *                  by the CTStaticSCTs directive).  A hypothetical
+ *                  external mechanism for maintaining SCTs following
+ *                  some other model could store them here for use
+ *                  by the server.
  *
  *   <rootdir>/<fingerprint>/collated
  *                  one or more SCTs ready to send
  *                  (this is all that the web server
  *                  processes care about)
+ *
+ * Additionally, the CTStaticSCTs directive specifies a certificate-
+ * specific directory of statically-maintained SCTs to be sent.
  */
 
 #define SERVERCERTS_BASENAME   "servercerts.pem"
