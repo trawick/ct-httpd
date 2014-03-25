@@ -37,8 +37,3 @@ stop:
 
 test:
 	./testlogconfig.py
-
-config:
-	python conf.py ssl_ct $(INST)
-	$(APACHECTL) -t
-	$(APACHECTL) -M | grep ssl_ct
