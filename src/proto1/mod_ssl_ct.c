@@ -46,7 +46,7 @@
 
 #include "apr_version.h"
 #if !APR_VERSION_AT_LEAST(1,5,0)
-#error mod_ssl_ct requires APR 1.5.0 or later! (for apr_escape.h stuff)
+#error mod_ssl_ct requires APR 1.5.0 or later! (for apr_escape.h)
 #endif
 
 #include "apr_escape.h"
@@ -2095,11 +2095,9 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
 {
     conn_rec *c = arg;
 
-    ap_log_cerror(APLOG_MARK, APLOG_TRACE8, 0, c, "tlsext_cb called (%d,%d,%d)",
-                  client_server, type, len);
-
     if (type == CT_EXTENSION_TYPE) {
-        ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c, "Got CT TLS extension");
+        ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c,
+                      "tlsext_cb called, got CT TLS extension");
 
         client_is_ct_aware(c);
     }
