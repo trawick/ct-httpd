@@ -28,6 +28,8 @@
  *     timestamp and succeed later after time elapses; fixit!
  *   . server: shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
+ *   . research: Is it possible to send an SCT that is outside of the known
+ *     valid interval for the log?
  */
 
 #if !defined(WIN32)
@@ -343,6 +345,9 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
             break;
         }
 
+        /* If the SCT has a timestamp in the future, it may have just been
+         * created by the log.
+         */
         if (fields.time > apr_time_now()) {
             ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
                          "SCT in file %s has timestamp in future (%s), skipping",
@@ -810,6 +815,7 @@ static void *run_service_thread(apr_thread_t *me, void *data)
                                     sconf->db_log_config);
                 ap_assert(apr_thread_rwlock_unlock(log_config_rwlock) == 0);
                 if (rv != APR_SUCCESS) {
+                    /* specific issue already logged */
                     ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s,
                                  SERVICE_THREAD_NAME " - no active configuration until "
                                  "log config DB is corrected");
@@ -1670,7 +1676,6 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
 
                 rv = ctutil_file_write_uint16(s, audit_file, SCT_START);
 
-                /* now write the SCT!!! */
                 sct = sct_elts[i];
 
                 if (rv == APR_SUCCESS) {
@@ -1765,14 +1770,6 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
         ext = sk_X509_EXTENSION_value(exts, idx);
         oct = X509_EXTENSION_get_data(ext);
 
-        /* X509V3_EXT_print(_, ext, _, _); */
-
-        /* we need to get to the ASN1_OCTET_STRING * to get
-         * the data and len.
-         */
-
-        /* i2r_scts(method, ext_str, _, _); */
-
         conncfg->ocsp_has_sct_list = 1;
         conncfg->peer_ct_aware = 1;
         conncfg->ocsp_sct_list_size = oct->length - 2;
@@ -1806,14 +1803,13 @@ static int client_extension_callback_1(SSL *ssl, unsigned short ext_type,
     return 1;
 }
 
+/* Get SCT(s) from ServerHello */
 static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
-                                    const unsigned char *in, unsigned short inlen,
-                                    int *al, void *arg)
+                                       const unsigned char *in, unsigned short inlen,
+                                       int *al, void *arg)
 {
     conn_rec *c = (conn_rec *)SSL_get_app_data(ssl);
     ct_conn_config *conncfg = get_conn_config(c);
-
-    /* need to retrieve SCT(s) from ServerHello (or certificate or stapled response) */
 
     ap_log_cerror(APLOG_MARK, APLOG_TRACE2, 0, c,
                   "client_extension_callback_2 called, "
