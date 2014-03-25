@@ -29,8 +29,8 @@ SCT_START = 4
 
 
 def usage():
-    print >> sys.stderr, 'Usage: %s /path/to/audit/files ' + \
-        '[/path/to/log-config-db]' % sys.argv[0]
+    print >> sys.stderr, ('Usage: %s /path/to/audit/files ' +
+                          '[/path/to/log-config-db]') % sys.argv[0]
     sys.exit(1)
 
 
@@ -42,36 +42,35 @@ def audit(fn, tmp, already_checked, cur):
     # First, parse the audit file into a series of related
     #
     #   1. PEM file with certificate chain
-    #      (TODO: teach verify_single_proof to accept DER)
     #   2. Individual SCT files
     #
     # Next,  for each SCT, invoke verify_single_proof to verify.
-    bytes = open(fn, 'rb').read()
+    log_bytes = open(fn, 'rb').read()
     offset = 0
-    while offset < len(bytes):
+    while offset < len(log_bytes):
         print 'Got package from server...'
-        val = struct.unpack_from('>H', bytes, offset)
+        val = struct.unpack_from('>H', log_bytes, offset)
         assert val[0] == SERVER_START
         offset += 2
 
-        assert struct.unpack_from('>H', bytes, offset)[0] == KEY_START
+        assert struct.unpack_from('>H', log_bytes, offset)[0] == KEY_START
         offset += 2
 
-        key_size = struct.unpack_from('>h', bytes, offset)[0]
+        key_size = struct.unpack_from('>h', log_bytes, offset)[0]
         assert key_size > 0
         offset += 2
 
-        key = bytes[offset:offset + key_size]
+        key = log_bytes[offset:offset + key_size]
         offset += key_size
 
         # at least one certificate
-        assert struct.unpack_from('>H', bytes, offset)[0] == CERT_START
+        assert struct.unpack_from('>H', log_bytes, offset)[0] == CERT_START
 
         # for each certificate:
         leaf = None
-        while struct.unpack_from('>H', bytes, offset)[0] == CERT_START:
+        while struct.unpack_from('>H', log_bytes, offset)[0] == CERT_START:
             offset += 2
-            val = struct.unpack_from('BBB', bytes, offset)
+            val = struct.unpack_from('BBB', log_bytes, offset)
             offset += 3
             der_size = (val[0] << 16) | (val[1] << 8) | (val[2] << 0)
             print '  Certificate size:', hex(der_size)
@@ -79,25 +78,25 @@ def audit(fn, tmp, already_checked, cur):
                 leaf = (offset, der_size)
             offset += der_size
 
-        pem = ssl.DER_cert_to_PEM_cert(bytes[leaf[0]:leaf[0] + leaf[1]])
+        pem = ssl.DER_cert_to_PEM_cert(log_bytes[leaf[0]:leaf[0] + leaf[1]])
         with open(tmp_leaf_pem_fn, 'w') as tmp_leaf_pem:
             tmp_leaf_pem.write(pem)
 
         # at least one SCT
-        assert struct.unpack_from('>H', bytes, offset)[0] == SCT_START
+        assert struct.unpack_from('>H', log_bytes, offset)[0] == SCT_START
 
         # for each SCT:
-        while offset < len(bytes) and \
-                struct.unpack_from('>H', bytes, offset)[0] == SCT_START:
+        while offset < len(log_bytes) and \
+                struct.unpack_from('>H', log_bytes, offset)[0] == SCT_START:
             offset += 2
             len_offset = offset
-            sct_size = struct.unpack_from('>H', bytes, len_offset)[0]
+            sct_size = struct.unpack_from('>H', log_bytes, len_offset)[0]
             offset += 2
             print '  SCT size:', hex(sct_size)
-            log_id = bytes[offset + 1:offset + 1 + 32]
+            log_id = log_bytes[offset + 1:offset + 1 + 32]
             log_id_hex = binascii.hexlify(log_id).upper()
             print '    Log id: %s' % log_id_hex
-            timestamp_ms = struct.unpack_from('>Q', bytes, offset + 33)[0]
+            timestamp_ms = struct.unpack_from('>Q', log_bytes, offset + 33)[0]
             print '    Timestamp: %s' % timestamp_ms
 
             #  If we ever need the full SCT: sct = (offset, sct_size)
