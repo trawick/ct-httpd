@@ -136,6 +136,6 @@ Configure mod\_ssl\_ct like this:
 
 ## Issues
 
-* Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism, such that some administrators may want to maintain SCTs themselves to avoid installing much more code on a carefully maintained server.)
-* verify\_single\_proof.py is itself not complete, but that is planned.
+* verify\_single\_proof.py is itself not complete; in particular, it does not report success/failure in an appropriate manner.
 * Logging of the results from verification is needed, along with a mechanism for reporting exceptions; this needs verify\_single\_proof to be completed.
+* Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism, such that some administrators may want to maintain SCTs themselves to avoid installing much more code on a carefully maintained server.)
