@@ -121,7 +121,7 @@ def audit(fn, tmp, already_checked, cur):
                         log_url = log_url.split('://')[1]
                     log_url_arg = '--log_url %s' % log_url
 
-                    print 'Log URL: ' + log_url
+                    print '    Log URL: ' + log_url
 
             cmd = 'verify_single_proof.py --cert %s --timestamp %s %s' % \
                   (tmp_leaf_pem_fn, timestamp_ms, log_url_arg)
