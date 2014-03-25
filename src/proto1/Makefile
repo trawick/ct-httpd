@@ -1,4 +1,5 @@
 INST = $(HOME)/inst/ct-64
+INST = $(HOME)/inst/ct24-64
 APACHECTL = $(INST)/bin/apachectl
 APXS = $(INST)/bin/apxs
 SSLSRC = $(HOME)/svn/httpd-ct/modules/ssl

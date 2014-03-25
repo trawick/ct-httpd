@@ -26,7 +26,6 @@
  *     timestamp and succeed later after time elapses; fixit!
  *   . server: shouldn't have to read file of server SCTs on every handshake
  *   . split mod_ssl_ct.c into more pieces
- *   . support building with httpd 2.4.x
  */
 
 #if !defined(WIN32)
