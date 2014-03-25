@@ -18,21 +18,21 @@ The SQLite3 database is maintained by a command-line program (ctlogconfig).
 ## Configuration issues
 
 * The public key is currently configured as the name of a file containing the PEM encoding of the key, so the PEM file has to exist with the same lifetime as the configuration in order to use that.  It may be more useful to store the DER encoding of the public key directly in the database, while allowing the administrator to specify a PEM or DER-formatted file to be read.
-* ctlogconfig may allow the user to create multiple entries that describe the same log.  (Some duplicates could be detected.)
+* ctlogconfig may allow the user to create multiple entries that describe the same log, such as when configuring a log URL without other information and then configuring a log URL for a particular log id.
 
 ## Use of log configuration by server mode
 
-Server mode is concerned primarily with the URL of the log.  For each log URL found in the configuration (other than those marked as having failed audit), server certificates will be submitted to the log and the SCTs received will be sent to clients in the ServerHello once their timestamp is valid.
+Server mode is concerned primarily with the URL of the log.  For each log URL found in the configuration (other than those marked as distrusted or with a trusted time interval in the past or the future), server certificates will be submitted to the log and the SCTs received will be sent to clients in the ServerHello once their timestamp is valid.
 
 ## Use of log configuration by proxy mode
 
-Proxy mode uses the public key in order to verify the signature of SCTs it receives.
+Proxy mode uses the public key of the log in order to verify the signature of SCTs it receives.
 
 Proxy mode checks the general purpose "distrusted" flag as well as interval of valid timestamps of a log to determine if an SCT is from a log known to be untrusted.
 
 ## Use of log configuration by off-line verification
 
-A log URL can be specified for a log id, so that verification of an SCT from that log uses the specified URL rather than the default.
+A log URL can be specified for a particular log id so that verification of an SCT from that log uses the specified URL rather than the default coded in the certificate transparency tools.
 
 SCT configuration
 =================
@@ -86,6 +86,29 @@ As an optimization, on-line verification and storing of data from the server is 
 * Each certificate is represented by CERT_START (0x0003) and three-byte length followed by the certificate in DER.
 * Each SCT is represented by SCT_START (0x0004) and two-byte length followed by the SCT.
 
+Prerequisites
+=============
+
+## Certificate transparency open source project
+
+The certificate-transparency tools (https://code.google.com/p/certificate-transparency/source/browse/) are required for
+
+* submission of server certificates to logs to obtain SCTs (which is also used simply to find the SCTs for certificates previously submitted
+* off-line audit of SCTs received by proxy from backend servers
+
+To avoid installing these tools on the web server machine (which is no fun!), you may
+
+* Statically maintain SCTs for your server certificates using the log submission tool on another machine, and use the CTStaticSCTs directive to point to them
+* Perform the off-line audit of SCTs received by proxy on another machine by moving the .out files from the CTAuditStorage directory to a machine with the tools installed.
+
+## OpenSSL 1.0.2
+
+This is absolutely required for web server/proxy support.
+
+## Python 2.x
+
+2.7 is fine.  It has not been tested with 2.6 or earlier.  This is required for manipulation of the log config database and for performing an off-line audit of SCTs received by proxy.  Neither of these has to be performed on the web server/proxy machine.
+
 Build
 =====
 
@@ -117,7 +140,7 @@ Configure mod\_ssl\_ct like this:
     CTServerHelloSCTLimit 100    (essentially unlimited)
     # CTStaticSCTs /path/to/server-cert.pem /path/to/directory
 ```
-* If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate specified by CTStaticSCTs.
+* If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate specified by CTStaticSCTs.  A given directory can be used only for the specified certificate (one directory of static SCTs per server certificate).
 * You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.  This requires SQLite3 support in APR-Util.
 * The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
 
@@ -136,6 +159,5 @@ Configure mod\_ssl\_ct like this:
 
 ## Issues
 
-* verify\_single\_proof.py is itself not complete; in particular, it does not report success/failure in an appropriate manner.
+* verify\_single\_proof.py is itself not complete; in particular, it does not report success/failure in an appropriate manner, so ctauditscts has no logic yet to detect success/failure.
 * Logging of the results from verification is needed, along with a mechanism for reporting exceptions; this needs verify\_single\_proof to be completed.
-* Performing the off-line audit on the web server machine requires various prerequisites due to the reliance on certificate-transparency tools.  It may be appropriate to run a script on the web server machine to move the files elsewhere where installing extra dependencies is not as big a concern.  (The same is true of the log submission mechanism, such that some administrators may want to maintain SCTs themselves to avoid installing much more code on a carefully maintained server.)
