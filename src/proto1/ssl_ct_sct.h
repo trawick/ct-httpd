@@ -21,7 +21,6 @@
 #include "apr_tables.h"
 
 #include "httpd.h"
-#include "ssl_hooks.h"
 
 #include "ssl_ct_log_config.h"
 

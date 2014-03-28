@@ -66,8 +66,8 @@
 #include "util_mutex.h"
 #include "ap_mpm.h"
 
-#include "ssl_hooks.h"
 #include "mod_proxy.h"
+#include "mod_ssl.h"
 
 #include "ssl_ct_util.h"
 #include "ssl_ct_sct.h"

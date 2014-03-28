@@ -18,7 +18,6 @@
 #define SSL_CT_LOG_CONFIG_H
 
 #include "httpd.h"
-#include "ssl_hooks.h"
 
 typedef struct ct_log_config {
     const char *log_id; /* binary form */
