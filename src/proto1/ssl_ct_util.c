@@ -234,41 +234,15 @@ apr_status_t ctutil_read_file(apr_pool_t *p,
     return rv;
 }
 
-apr_status_t ctutil_run_to_log(apr_pool_t *p,
-                               server_rec *s,
-                               const char *args[8],
-                               const char *desc_for_log)
+#if APR_FILES_AS_SOCKETS
+apr_status_t io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
+                     const char *desc_for_log)
 {
-    apr_exit_why_e exitwhy;
+    apr_status_t rv;
     apr_pollfd_t pfd = {0};
     apr_pollset_t *pollset;
-    apr_proc_t proc = {0};
-    apr_procattr_t *attr;
-    apr_status_t rv;
-    int exitcode, fds_waiting;
+    int fds_waiting;
 
-    rv = apr_procattr_create(&attr, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_create failed");
-        return rv;
-    }
-
-    rv = apr_procattr_io_set(attr,
-                             APR_NO_PIPE,
-                             APR_CHILD_BLOCK,
-                             APR_CHILD_BLOCK);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_io_set failed");
-        return rv;
-    }
-
-    rv = apr_proc_create(&proc, args[0], args, NULL, attr, p);
-    if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_proc_create failed");
-        return rv;
-    }
-
-#if APR_FILES_AS_SOCKETS
     rv = apr_pollset_create(&pollset, 2, p, 0);
     ap_assert(rv == APR_SUCCESS);
 
@@ -277,12 +251,12 @@ apr_status_t ctutil_run_to_log(apr_pool_t *p,
     pfd.p = p;
     pfd.desc_type = APR_POLL_FILE;
     pfd.reqevents = APR_POLLIN;
-    pfd.desc.f = proc.err;
+    pfd.desc.f = proc->err;
     rv = apr_pollset_add(pollset, &pfd);
     ap_assert(rv == APR_SUCCESS);
     ++fds_waiting;
 
-    pfd.desc.f = proc.out;
+    pfd.desc.f = proc->out;
     rv = apr_pollset_add(pollset, &pfd);
     ap_assert(rv == APR_SUCCESS);
     ++fds_waiting;
@@ -319,12 +293,85 @@ apr_status_t ctutil_run_to_log(apr_pool_t *p,
             }
         }
     }
-#else
-#error Implement a different type of I/O loop for Windows.
-    /* See mod_ext_filter for code for !APR_FILES_AS_SOCKETS which
-     * services two pipes using a timeout and non-blocking handles.
-     */
-#endif
+}
+#else /* APR_FILES_AS_SOCKETS */
+apr_status_t io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
+                     const char *desc_for_log)
+{
+    apr_status_t rv;
+    apr_file_t *fds[2] = {proc->out, proc->err};
+    apr_size_t len;
+    char buf[4096];
+    int fds_waiting = 2;
+
+    while (fds_waiting) {
+        int i;
+        int read = 0;
+
+        for (i = 0; i < sizeof fds / sizeof fds[0]; i++) {
+            if (!fds[i]) {
+                continue;
+            }
+            len = sizeof buf;
+            rv = apr_file_read(fds[i], buf, &len);
+            if (APR_STATUS_IS_EOF(rv)) {
+                apr_file_close(fds[i]);
+                fds[i] = NULL;
+                --fds_waiting;
+            }
+            else if (rv != APR_SUCCESS) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
+                             "apr_file_read");
+            }
+            else {
+                ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, s,
+                             "%s: %.*s", desc_for_log, (int)len, buf);
+                ++read;
+            }
+        }
+        if (fds_waiting && !read) {
+            /* no tight loop */
+            apr_sleep(apr_time_from_msec(100));
+        }
+    }
+
+    return rv;
+}
+#endif /* APR_FILES_AS_SOCKETS */
+
+apr_status_t ctutil_run_to_log(apr_pool_t *p,
+                               server_rec *s,
+                               const char *args[8],
+                               const char *desc_for_log)
+{
+    apr_exit_why_e exitwhy;
+    apr_proc_t proc = {0};
+    apr_procattr_t *attr;
+    apr_status_t rv;
+    int exitcode;
+
+    rv = apr_procattr_create(&attr, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_create failed");
+        return rv;
+    }
+
+    rv = apr_procattr_io_set(attr,
+                             APR_NO_PIPE,
+                             APR_CHILD_BLOCK,
+                             APR_CHILD_BLOCK);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_procattr_io_set failed");
+        return rv;
+    }
+
+    rv = apr_proc_create(&proc, args[0], args, NULL, attr, p);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s, "apr_proc_create failed");
+        return rv;
+    }
+
+    (void)io_loop(p, s, &proc, desc_for_log);
 
     rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
     rv = rv == APR_CHILD_DONE ? APR_SUCCESS : rv;
