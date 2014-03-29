@@ -1,8 +1,7 @@
 INST = $(HOME)/inst/ct-64
-INST = $(HOME)/inst/ct24-64
+# INST = $(HOME)/inst/ct24-64
 APACHECTL = $(INST)/bin/apachectl
 APXS = $(INST)/bin/apxs
-SSLSRC = $(HOME)/svn/httpd-ct/modules/ssl
 OPENSSLINST = $(HOME)/inst/o102
 
 DOTC = mod_ssl_ct.c ssl_ct_sct.c ssl_ct_util.c ssl_ct_log_config.c
@@ -19,7 +18,7 @@ pep8:
 	pep8 $(PY)
 
 mod_ssl_ct.la: $(DOTC) $(DOTH)
-	$(APXS) -c -I$(SSLSRC) -I$(OPENSSLINST)/include $(DOTC)
+	$(APXS) -c -I$(OPENSSLINST)/include $(DOTC)
 
 install: mod_ssl_ct.la stop pure-install
 
