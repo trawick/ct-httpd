@@ -17,6 +17,8 @@ PROJECT(mod_ssl_ct C)
 
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
 
+FIND_PACKAGE(OpenSSL)
+
 IF(NOT EXISTS ${CMAKE_INSTALL_PREFIX}/lib/libhttpd.lib)
   MESSAGE(FATAL_ERROR "libhttpd.lib was not found in prefix ${CMAKE_INSTALL_PREFIX}")
 ENDIF()
@@ -40,11 +42,11 @@ SET(mod_ssl_ct_sources
 #   mod_ssl_ct.rc
    )
 
-INCLUDE_DIRECTORIES(${CMAKE_INSTALL_PREFIX}/include)
+INCLUDE_DIRECTORIES(${CMAKE_INSTALL_PREFIX}/include ${OPENSSL_INCLUDE_DIR})
 ADD_LIBRARY(mod_ssl_ct SHARED ${mod_ssl_ct_sources})
-# magic base address taken from traditional Windows build
-# FIXME SET_TARGET_PROPERTIES(mod_ssl_ct PROPERTIES SUFFIX .so LINK_FLAGS /base:0x46430000)
-TARGET_LINK_LIBRARIES(mod_ssl_ct ${CMAKE_INSTALL_PREFIX}/lib/libhttpd.lib ${apr_libraries})
+# need target property LINK_FLAGS /base:xxxxxx
+SET_TARGET_PROPERTIES(mod_ssl_ct PROPERTIES SUFFIX .so)
+TARGET_LINK_LIBRARIES(mod_ssl_ct ${CMAKE_INSTALL_PREFIX}/lib/libhttpd.lib ${apr_libraries} ${OPENSSL_LIBRARIES})
 INSTALL(TARGETS mod_ssl_ct RUNTIME DESTINATION modules)
 IF(INSTALL_PDB)
   INSTALL(FILES ${CMAKE_BINARY_DIR}/mod_ssl_ct.pdb DESTINATION modules
