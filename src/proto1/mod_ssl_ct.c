@@ -2419,19 +2419,19 @@ static void ct_register_hooks(apr_pool_t *p)
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_child_init(ssl_ct_child_init, NULL, NULL, APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(proxy_http_cleanup, ssl_ct_proxy_http_cleanup, NULL, NULL,
-                     APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
-                     APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
-                     APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_new_client_pre_handshake,
-                     ssl_ct_ssl_new_client_pre_handshake,
-                     NULL, NULL, APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_proxy_verify, ssl_ct_ssl_proxy_verify,
-                     NULL, NULL, APR_HOOK_MIDDLE);
-    AP_OPTIONAL_HOOK(ssl_proxy_post_handshake, ssl_ct_ssl_proxy_post_handshake,
-                     NULL, NULL, APR_HOOK_MIDDLE);
+    APR_OPTIONAL_HOOK(proxy, proxy_http_cleanup, ssl_ct_proxy_http_cleanup, NULL, NULL,
+                      APR_HOOK_MIDDLE);
+    APR_OPTIONAL_HOOK(ssl, ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
+                      APR_HOOK_MIDDLE);
+    APR_OPTIONAL_HOOK(ssl, ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
+                      APR_HOOK_MIDDLE);
+    APR_OPTIONAL_HOOK(ssl, ssl_new_client_pre_handshake,
+                      ssl_ct_ssl_new_client_pre_handshake,
+                      NULL, NULL, APR_HOOK_MIDDLE);
+    APR_OPTIONAL_HOOK(ssl, ssl_proxy_verify, ssl_ct_ssl_proxy_verify,
+                      NULL, NULL, APR_HOOK_MIDDLE);
+    APR_OPTIONAL_HOOK(ssl, ssl_proxy_post_handshake, ssl_ct_ssl_proxy_post_handshake,
+                      NULL, NULL, APR_HOOK_MIDDLE);
 }
 
 static const char *parse_num(apr_pool_t *p,
