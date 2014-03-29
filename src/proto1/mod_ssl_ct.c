@@ -1000,7 +1000,7 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p,
                             apr_array_header_t *log_config)
 {
     apr_hash_t *already_processed;
-    apr_status_t rv;
+    apr_status_t rv = APR_SUCCESS;
     server_rec *s;
 
     already_processed = apr_hash_make(p);
@@ -1048,6 +1048,25 @@ static int refresh_all_scts(server_rec *s_main, apr_pool_t *p,
     return rv;
 }
 
+static int num_server_certs(server_rec *s_main)
+{
+    int num = 0;
+    server_rec *s;
+
+    s = s_main;
+    while (s) {
+        ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                       &ssl_ct_module);
+
+        if (sconf && sconf->server_cert_info) {
+            num += sconf->server_cert_info->nelts;
+        }
+        s = s->next;
+    }
+
+    return num;
+}
+
 static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
                               apr_pool_t *ptemp, server_rec *s_main)
 {
@@ -1069,9 +1088,23 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     }
 #endif /* HAVE_SCT_DAEMON */
 
+    if (num_server_certs(s_main) == 0) {
+        /* Theoretically this module could operate in a proxy-only
+         * configuration, where httpd does not act as a TLS server but proxy is
+         * configured as a TLS client.  That isn't currently implemented.
+         */
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "No server certificates were found.");
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
+                     "mod_ssl_ct only supports configurations with a TLS server.");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
     rv = ap_global_mutex_create(&ssl_ct_sct_update, NULL,
                                 SSL_CT_MUTEX_TYPE, NULL, s_main, pconf, 0);
     if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "could not create global mutex");
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -1123,6 +1156,8 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
 
     rv = refresh_all_scts(s_main, pconf, active_log_config);
     if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "refresh_all_scts() failed");
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
