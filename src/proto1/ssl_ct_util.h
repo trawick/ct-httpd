@@ -42,7 +42,7 @@ apr_status_t ctutil_read_dir(apr_pool_t *p,
 apr_status_t ctutil_read_file(apr_pool_t *p,
                               server_rec *s,
                               const char *fn,
-                              apr_size_t limit,
+                              apr_off_t limit,
                               char **contents,
                               apr_size_t *contents_size);
 

@@ -184,7 +184,7 @@ apr_status_t ctutil_read_dir(apr_pool_t *p,
 apr_status_t ctutil_read_file(apr_pool_t *p,
                               server_rec *s,
                               const char *fn,
-                              apr_size_t limit,
+                              apr_off_t limit,
                               char **contents,
                               apr_size_t *contents_size)
 {
@@ -493,7 +493,7 @@ apr_status_t ctutil_deserialize_uint16(const unsigned char **mem,
     apr_uint64_t val64;
 
     rv = deserialize_uint(mem, avail, 16, &val64);
-    *pval = (apr_uint64_t)val64;
+    *pval = (apr_uint16_t)val64;
     return rv;
 }
 
@@ -512,7 +512,7 @@ static apr_status_t serialize_uint(unsigned char **mem, apr_size_t *avail,
     mask = (apr_uint64_t)0xFF << (num_bits - 8);
     shift = num_bits - 8;
     for (i = 0; i < num_bytes; i++) {
-        **mem = (val & mask) >> shift;
+        **mem = (unsigned char)((val & mask) >> shift);
         *mem += 1;
         *avail -= 1;
         mask = mask >> 8;

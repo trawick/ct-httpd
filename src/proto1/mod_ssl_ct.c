@@ -40,6 +40,8 @@
  */
 #endif
 
+#include <limits.h>
+
 #if !defined(WIN32) && defined(HAVE_SCT_DAEMON)
 #include <unistd.h>
 #endif
@@ -146,7 +148,7 @@ typedef struct ct_server_cert_info {
 
 typedef struct ct_sct_data {
     const void *data;
-    apr_size_t len;
+    apr_uint16_t len;
 } ct_sct_data;
 
 typedef struct ct_callback_info {
@@ -325,7 +327,8 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
 
     for (i = 0; i < arr->nelts; i++) {
         char *scts;
-        apr_size_t scts_size;
+        apr_size_t scts_size_wide;
+        apr_uint16_t scts_size;
         sct_fields_t fields;
 
         cur_sct_file = elts[i];
@@ -333,10 +336,13 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                      "Adding SCT from file %s", cur_sct_file);
 
-        rv = ctutil_read_file(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts, &scts_size);
+        rv = ctutil_read_file(p, s, cur_sct_file, MAX_SCTS_SIZE, &scts,
+                              &scts_size_wide);
         if (rv != APR_SUCCESS) {
             break;
         }
+        ap_assert(scts_size_wide <= USHRT_MAX);
+        scts_size = (apr_uint16_t)scts_size_wide;
 
         rv = sct_parse(cur_sct_file,
                        s, (const unsigned char *)scts, scts_size, NULL, &fields);
@@ -1471,7 +1477,8 @@ static apr_status_t deserialize_SCTs(apr_pool_t *p,
             ct_sct_data *sct = (ct_sct_data *)apr_array_push(conncfg->all_scts);
 
             sct->data = start_of_data;
-            sct->len = len_of_data;
+            ap_assert(len_of_data <= USHRT_MAX);
+            sct->len = (apr_uint16_t)len_of_data;
         }
     }
 
@@ -1671,7 +1678,9 @@ static void save_server_data(conn_rec *c, cert_chain *cc,
             }
 
             if (rv == APR_SUCCESS) {
-                rv = ctutil_file_write_uint16(s, audit_file, strlen(key));
+                ap_assert(strlen(key) <= USHRT_MAX);
+                rv = ctutil_file_write_uint16(s, audit_file,
+                                              (apr_uint16_t)strlen(key));
             }
 
             if (rv == APR_SUCCESS) {
@@ -2114,7 +2123,8 @@ static int server_extension_callback_2(SSL *ssl, unsigned short ext_type,
                    c->base_server, (char **)&scts, &scts_len);
     if (rv == APR_SUCCESS) {
         *out = scts;
-        *outlen = scts_len;
+        ap_assert(scts_len <= USHRT_MAX);
+        *outlen = (unsigned short)scts_len;
     }
     else {
         /* Skip this extension for ServerHello */
