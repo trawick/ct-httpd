@@ -316,11 +316,13 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         return rv;
     }
 
-    /* Add in any SCTs that the administrator has configured */
-    rv = ctutil_read_dir(p, s, static_cert_sct_dir, "*.sct", &arr);
-    if (rv != APR_SUCCESS) {
-        apr_file_close(tmpfile);
-        return rv;
+    if (static_cert_sct_dir) {
+        /* Add in any SCTs that the administrator has configured */
+        rv = ctutil_read_dir(p, s, static_cert_sct_dir, "*.sct", &arr);
+        if (rv != APR_SUCCESS) {
+            apr_file_close(tmpfile);
+            return rv;
+        }
     }
 
     elts = (const char * const *)arr->elts;
