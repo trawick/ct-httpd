@@ -164,7 +164,7 @@ apr_status_t ctutil_read_dir(apr_pool_t *p,
         }
     }
 
-    if (rv == APR_ENOENT) {
+    if (APR_STATUS_IS_ENOENT(rv)) {
         rv = APR_SUCCESS;
     }
     else if (rv != APR_SUCCESS && !reported) {
