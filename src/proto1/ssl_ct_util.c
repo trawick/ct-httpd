@@ -235,8 +235,8 @@ apr_status_t ctutil_read_file(apr_pool_t *p,
 }
 
 #if APR_FILES_AS_SOCKETS
-apr_status_t io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
-                     const char *desc_for_log)
+static void io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
+                    const char *desc_for_log)
 {
     apr_status_t rv;
     apr_pollfd_t pfd = {0};
@@ -295,8 +295,8 @@ apr_status_t io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
     }
 }
 #else /* APR_FILES_AS_SOCKETS */
-apr_status_t io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
-                     const char *desc_for_log)
+static void io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
+                    const char *desc_for_log)
 {
     apr_status_t rv;
     apr_file_t *fds[2] = {proc->out, proc->err};
@@ -334,8 +334,6 @@ apr_status_t io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
             apr_sleep(apr_time_from_msec(100));
         }
     }
-
-    return rv;
 }
 #endif /* APR_FILES_AS_SOCKETS */
 
@@ -371,7 +369,7 @@ apr_status_t ctutil_run_to_log(apr_pool_t *p,
         return rv;
     }
 
-    (void)io_loop(p, s, &proc, desc_for_log);
+    io_loop(p, s, &proc, desc_for_log);
 
     rv = apr_proc_wait(&proc, &exitcode, &exitwhy, APR_WAIT);
     rv = rv == APR_CHILD_DONE ? APR_SUCCESS : rv;

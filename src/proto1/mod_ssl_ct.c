@@ -382,7 +382,7 @@ static apr_status_t collate_scts(server_rec *s, apr_pool_t *p,
         rv = apr_file_write_full(tmpfile, scts, scts_size, &bytes_written);
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
-                         "can't write %" APR_SIZE_T_FMT " bytes to %s",
+                         "can't write %hu bytes to %s",
                          scts_size, tmp_collated_fn);
             break;
         }
