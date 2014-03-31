@@ -319,6 +319,11 @@ static void io_loop(apr_pool_t *p, server_rec *s, apr_proc_t *proc,
                 fds[i] = NULL;
                 --fds_waiting;
             }
+            else if (APR_STATUS_IS_EAGAIN(rv)) {
+                /* we don't actually know if data is ready before reading, so
+                 * this isn't an error
+                 */
+            }
             else if (rv != APR_SUCCESS) {
                 ap_log_error(APLOG_MARK, APLOG_ERR, rv, s,
                              "apr_file_read");
