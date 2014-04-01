@@ -197,11 +197,12 @@ static apr_thread_rwlock_t *log_config_rwlock;
 static int daemon_start(apr_pool_t *p, server_rec *main_server, apr_proc_t *procnew);
 static server_rec *root_server = NULL;
 static apr_pool_t *root_pool = NULL;
-static apr_pool_t *pdaemon = NULL;
 static pid_t daemon_pid;
 static int daemon_should_exit = 0;
 
 #endif /* HAVE_SCT_DAEMON_CHILD */
+
+static apr_pool_t *pdaemon = NULL;
 
 #ifdef HAVE_SCT_DAEMON_THREAD
 static apr_thread_t *daemon_thread;
@@ -853,6 +854,40 @@ static apr_status_t wait_for_thread(void *data)
     return APR_SUCCESS;
 }
 
+static void sct_daemon_cycle(ct_server_config *sconf, server_rec *s_main,
+                             apr_pool_t *ptemp, const char *daemon_name)
+{
+    apr_status_t rv;
+
+    if (sconf->db_log_config) { /* not using static config */
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                     "%s - reloading config", daemon_name);
+        apr_pool_clear(sconf->db_log_config_pool);
+        active_log_config = NULL;
+        sconf->db_log_config =
+            apr_array_make(sconf->db_log_config_pool, 2,
+                           sizeof(ct_log_config *));
+        rv = read_config_db(sconf->db_log_config_pool,
+                            s_main, sconf->log_config_fname,
+                            sconf->db_log_config);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s_main,
+                         "%s - no active configuration until "
+                         "log config DB is corrected", daemon_name);
+            return;
+        }
+        active_log_config = sconf->db_log_config;
+    }
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
+                 "%s - refreshing SCTs as needed", daemon_name);
+    rv = refresh_all_scts(s_main, ptemp, active_log_config);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
+                     "%s - SCT refresh failed; will try again later",
+                     daemon_name);
+    }
+}
+
 #ifdef HAVE_SCT_DAEMON_CHILD
 
 static void daemon_signal_handler(int sig)
@@ -940,32 +975,7 @@ static int sct_daemon(server_rec *s_main)
     while (!daemon_should_exit) {
         apr_sleep(apr_time_from_sec(30)); /* SIGHUP at restart/stop will break out */
 
-        if (sconf->db_log_config) { /* not using static config */
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                         DAEMON_NAME " - reloading config");
-            apr_pool_clear(sconf->db_log_config_pool);
-            active_log_config = NULL;
-            sconf->db_log_config =
-                apr_array_make(sconf->db_log_config_pool, 2,
-                               sizeof(ct_log_config *));
-            rv = read_config_db(sconf->db_log_config_pool,
-                                s_main, sconf->log_config_fname,
-                                sconf->db_log_config);
-            if (rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s_main,
-                             DAEMON_NAME " - no active configuration until "
-                             "log config DB is corrected");
-                continue;
-            }
-            active_log_config = sconf->db_log_config;
-        }
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
-                     DAEMON_NAME " - refreshing SCTs as needed");
-        rv = refresh_all_scts(s_main, ptemp, active_log_config);
-        if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
-                         DAEMON_NAME " - SCT refresh failed; will try again later");
-        }
+        sct_daemon_cycle(sconf, s_main, ptemp, DAEMON_NAME);
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
@@ -1006,11 +1016,15 @@ static void *sct_daemon_thread(apr_thread_t *me, void *data)
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
     int mpmq_s;
+    apr_pool_t *ptemp;
     apr_status_t rv;
     int count = 0;
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                  DAEMON_THREAD_NAME " started");
+
+    /* ptemp - temporary pool for refresh cycles */
+    apr_pool_create(&ptemp, pdaemon);
 
     while (1) {
         if ((rv = ap_mpm_query(AP_MPMQ_MPM_STATE, &mpmq_s)) != APR_SUCCESS) {
@@ -1022,12 +1036,12 @@ static void *sct_daemon_thread(apr_thread_t *me, void *data)
         apr_sleep(apr_time_from_sec(1));
         if (++count >= 30) {
             count = 0;
-            /* DO STUFF HERE */
+            sct_daemon_cycle(sconf, s, ptemp, DAEMON_THREAD_NAME);
         }
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, rv, s,
-                 DAEMON_THREAD_NAME " exiting");
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                 DAEMON_THREAD_NAME " - exiting");
 
     return NULL;
 }
@@ -1036,6 +1050,7 @@ static int daemon_thread_start(apr_pool_t *pconf, server_rec *s_main)
 {
     apr_status_t rv;
 
+    apr_pool_create(&pdaemon, pconf);
     rv = apr_thread_create(&daemon_thread, NULL, sct_daemon_thread, s_main,
                            pconf);
     if (rv != APR_SUCCESS) {
