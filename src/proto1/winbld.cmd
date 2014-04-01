@@ -7,5 +7,8 @@ rd /s /q %BLDDIR%
 mkdir %BLDDIR%
 cd %BLDDIR%
 cmake %SSL_CT_CMAKE_OPTS% %HOME%\git\ct-httpd\src\proto1
+IF %ERRORLEVEL% NEQ 0 EXIT /b %ERRORLEVEL%
 nmake
+IF %ERRORLEVEL% NEQ 0 EXIT /b %ERRORLEVEL%
 nmake install
+IF %ERRORLEVEL% NEQ 0 EXIT /b %ERRORLEVEL%
