@@ -32,17 +32,15 @@
  *     valid interval for the log?
  */
 
-#if !defined(WIN32)
-#define HAVE_SCT_DAEMON
+#if defined(WIN32)
+#define HAVE_SCT_DAEMON_THREAD
 #else
-/* SCTs from logs or from admin-created .sct files are only picked up
- * at server start/restart.
- */
+#define HAVE_SCT_DAEMON_CHILD
 #endif
 
 #include <limits.h>
 
-#if !defined(WIN32) && defined(HAVE_SCT_DAEMON)
+#if defined(HAVE_SCT_DAEMON_CHILD)
 #include <unistd.h>
 #endif
 
@@ -94,6 +92,7 @@
 #define PROXY_SCT_SOURCES_VAR     "SSL_PROXY_SCT_SOURCES"
 
 #define DAEMON_NAME         "SCT maintenance daemon"
+#define DAEMON_THREAD_NAME  DAEMON_NAME " thread"
 #define SERVICE_THREAD_NAME "service thread"
 
 /** Limit on size of stored SCTs for a certificate (individual SCTs as well
@@ -184,7 +183,7 @@ static apr_thread_mutex_t *audit_file_mutex;
 static apr_thread_mutex_t *cached_server_data_mutex;
 static apr_thread_rwlock_t *log_config_rwlock;
 
-#ifdef HAVE_SCT_DAEMON
+#ifdef HAVE_SCT_DAEMON_CHILD
 
 /* The APR other-child API doesn't tell us how the daemon exited
  * (SIGSEGV vs. exit(1)).  The other-child maintenance function
@@ -202,7 +201,11 @@ static apr_pool_t *pdaemon = NULL;
 static pid_t daemon_pid;
 static int daemon_should_exit = 0;
 
-#endif /* HAVE_SCT_DAEMON */
+#endif /* HAVE_SCT_DAEMON_CHILD */
+
+#ifdef HAVE_SCT_DAEMON_THREAD
+static apr_thread_t *daemon_thread;
+#endif /* HAVE_SCT_DAEMON_THREAD */
 
 static const char *get_cert_fingerprint(apr_pool_t *p, const X509 *x)
 {
@@ -841,7 +844,7 @@ static void *run_service_thread(apr_thread_t *me, void *data)
     return NULL;
 }
 
-static apr_status_t wait_for_service_thread(void *data)
+static apr_status_t wait_for_thread(void *data)
 {
     apr_thread_t *thd = data;
     apr_status_t retval;
@@ -850,7 +853,7 @@ static apr_status_t wait_for_service_thread(void *data)
     return APR_SUCCESS;
 }
 
-#ifdef HAVE_SCT_DAEMON
+#ifdef HAVE_SCT_DAEMON_CHILD
 
 static void daemon_signal_handler(int sig)
 {
@@ -994,8 +997,59 @@ static int daemon_start(apr_pool_t *p, server_rec *main_server,
 #endif
     return OK;
 }
+#endif /* HAVE_SCT_DAEMON_CHILD */
 
-#endif /* HAVE_SCT_DAEMON */
+#ifdef HAVE_SCT_DAEMON_THREAD
+static void *sct_daemon_thread(apr_thread_t *me, void *data)
+{
+    server_rec *s = data;
+    ct_server_config *sconf = ap_get_module_config(s->module_config,
+                                                   &ssl_ct_module);
+    int mpmq_s;
+    apr_status_t rv;
+    int count = 0;
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                 DAEMON_THREAD_NAME " started");
+
+    while (1) {
+        if ((rv = ap_mpm_query(AP_MPMQ_MPM_STATE, &mpmq_s)) != APR_SUCCESS) {
+            break;
+        }
+        if (mpmq_s == AP_MPMQ_STOPPING) {
+            break;
+        }
+        apr_sleep(apr_time_from_sec(1));
+        if (++count >= 30) {
+            count = 0;
+            /* DO STUFF HERE */
+        }
+    }
+
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, rv, s,
+                 DAEMON_THREAD_NAME " exiting");
+
+    return NULL;
+}
+
+static int daemon_thread_start(apr_pool_t *pconf, server_rec *s_main)
+{
+    apr_status_t rv;
+
+    rv = apr_thread_create(&daemon_thread, NULL, sct_daemon_thread, s_main,
+                           pconf);
+    if (rv != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s_main,
+                     "could not create " DAEMON_THREAD_NAME " in parent");
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    apr_pool_cleanup_register(pconf, daemon_thread, wait_for_thread,
+                              apr_pool_cleanup_null);
+
+    return OK;
+}
+#endif /* HAVE_SCT_DAEMON_THREAD */
 
 static apr_status_t ssl_ct_mutex_remove(void *data)
 {
@@ -1081,7 +1135,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     ct_server_config *sconf = ap_get_module_config(s_main->module_config,
                                                    &ssl_ct_module);
     apr_status_t rv;
-#ifdef HAVE_SCT_DAEMON
+#ifdef HAVE_SCT_DAEMON_CHILD
     apr_proc_t *procnew = NULL;
     const char *userdata_key = "sct_daemon_init";
 
@@ -1094,7 +1148,7 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
         procnew->pid = -1;
         procnew->err = procnew->in = procnew->out = NULL;
     }
-#endif /* HAVE_SCT_DAEMON */
+#endif /* HAVE_SCT_DAEMON_CHILD */
 
     if (num_server_certs(s_main) == 0) {
         /* Theoretically this module could operate in a proxy-only
@@ -1169,14 +1223,27 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
-#ifdef HAVE_SCT_DAEMON
+#ifdef HAVE_SCT_DAEMON_CHILD
     if (ap_state_query(AP_SQ_MAIN_STATE) != AP_SQ_MS_CREATE_PRE_CONFIG) {
         int ret = daemon_start(pconf, s_main, procnew);
         if (ret != OK) {
             return ret;
         }
     }
-#endif /* HAVE_SCT_DAEMON */
+#endif /* HAVE_SCT_DAEMON_CHILD */
+
+#ifdef HAVE_SCT_DAEMON_THREAD
+    /* WIN32-ism: ensure this is the parent by checking AP_PARENT_PID,
+     * which is only set in WinNT children.
+     */
+    if (ap_state_query(AP_SQ_MAIN_STATE) != AP_SQ_MS_CREATE_PRE_CONFIG
+        && !getenv("AP_PARENT_PID")) {
+        int ret = daemon_thread_start(pconf, s_main);
+        if (ret != OK) {
+            return ret;
+        }
+    }
+#endif /* HAVE_SCT_DAEMON_THREAD */
 
     return OK;
 }
@@ -2312,7 +2379,7 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
         exit(APEXIT_CHILDSICK);
     }
 
-    apr_pool_cleanup_register(p, service_thread, wait_for_service_thread,
+    apr_pool_cleanup_register(p, service_thread, wait_for_thread,
                               apr_pool_cleanup_null);
 
     if (sconf->proxy_awareness != PROXY_OBLIVIOUS) {
