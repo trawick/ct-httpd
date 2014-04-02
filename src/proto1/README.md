@@ -101,13 +101,17 @@ To avoid installing these tools on the web server machine (which is no fun!), yo
 * Statically maintain SCTs for your server certificates using the log submission tool on another machine, and use the CTStaticSCTs directive to point to them
 * Perform the off-line audit of SCTs received by proxy on another machine by moving the .out files from the CTAuditStorage directory to a machine with the tools installed.
 
+### Certificate transparency tools on Windows
+
+To my knowledge, no build is currently implemented for this.  In order to test log submission on Windows, you can modify the source file fakect.c to be able to copy an SCT to the right place on your system, and install the compiled form as ct.exe in the appropriate directory under CTToolsDir.
+
 ## OpenSSL 1.0.2
 
 This is absolutely required for web server/proxy support.
 
 ## Python 2.x
 
-2.7 is fine.  It has not been tested with 2.6 or earlier.  This is required for manipulation of the log config database and for performing an off-line audit of SCTs received by proxy.  Neither of these has to be performed on the web server/proxy machine.
+2.7 is fine.  It has not been tested with 2.6 or earlier.  Python is required for manipulation of the log config database and for performing an off-line audit of SCTs received by proxy.  Neither of these has to be performed on the web server/proxy machine.
 
 Build
 =====
@@ -115,13 +119,21 @@ Build
 Build it like this:
 
 * Build OpenSSL 1.0.2-beta1
+  * Windows: You need the head of the OpenSSL-1.0.2-stable branch to pick up later fixes.
 * Patch httpd trunk or 2.4.9 with src/proto1/httpd.patch (which has to be built using OpenSSL 1.0.2-beta1)
-  * With 2.4.9 you'll get a lot of noise about offsets.  Ignore the noise.  (Caveat: I haven't tested with 2.4.9 yet.)
+  * With 2.4.9 you'll get a lot of noise about offsets.  Ignore the noise.  (Caveat: I haven't tested with 2.4.9 yet, but it certainly builds fine.)
 * If you want to store CT log configuration in a database, which will allow dynamic updates in the future, use a build of APR-Util with SQLite3 database support (--with-sqlite3) **and** use CTLogConfigDB instead of CTStaticLogConfig.
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
-* Build mod\_ssl\_ct with apxs, adding -I/path/to/httpd/modules/ssl and -I/path/to/openssl/include
+* Unix: Build mod\_ssl\_ct with apxs, adding -I/path/to/openssl/include
 ```
-    apxs -ci -I/path/to/httpd/modules/ssl -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_util.c ssl_ct_sct.c ssl_ct_log_config.c
+    apxs -ci -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_util.c ssl_ct_sct.c ssl_ct_log_config.c
+```
+* Windows: Build mod\_ssl\_ct with cmake, installing to the same prefix as httpd and OpenSSL 1.0.2; here's an example:
+```
+    mkdir temp_build_dir
+    cd temp_build_dir
+    cmake -DCMAKE_INSTALL_PREFIX=same-as-others -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=RelWithDebInfo \path\to\source
+    nmake && nmake install
 ```
 
 Configuration
