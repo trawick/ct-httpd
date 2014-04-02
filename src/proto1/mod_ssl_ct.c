@@ -21,8 +21,6 @@
  *   . ???
  *
  * + Known low-level code kludges/problems
- *   . needs some work for Windows, primarily in implementing a parent thread
- *     that runs the daemon process logic
  *   . proxy: an httpd child process validates SCTs from a server only on the
  *     first time the data is received; but it could fail once due to invalid
  *     timestamp and succeed later after time elapses; fixit!
