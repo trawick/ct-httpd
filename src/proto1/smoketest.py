@@ -32,10 +32,12 @@ def last_line(logfile):
 def check_log(logfile, peer_status, proxy_sct_sources):
     time.sleep(1)
     log = last_line(logfile)
-    regex = 'SSL_CT_PEER_STATUS="([a-z-]*)" SSL_PROXY_SCT_SOURCES="([a-z,]*)"'
+    regex = 'SSL_CT_PEER_STATUS="([a-z-]*)" SSL_PROXY_SCT_SOURCES="([a-z,-]*)"'
     p = re.compile(regex)
     m = p.search(log)
-    assert m
+    if not m:
+        print 'Variables not found in %s; last line is <%s>' % (logfile, log)
+        assert m
     assert m.group(1) == peer_status
     assert m.group(2) == proxy_sct_sources
 
