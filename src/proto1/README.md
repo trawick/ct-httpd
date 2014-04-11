@@ -118,10 +118,12 @@ Build
 
 Build it like this:
 
-* Build OpenSSL 1.0.2-beta1
+* Build OpenSSL 1.0.2-beta1 or later
   * Windows: You need the head of the OpenSSL-1.0.2-stable branch to pick up later fixes.
-* Patch httpd trunk or 2.4.9 with src/proto1/httpd.patch (which has to be built using OpenSSL 1.0.2-beta1)
-  * With 2.4.9 you'll get a lot of noise about offsets.  Ignore the noise.  (Caveat: I haven't tested with 2.4.9 yet, but it certainly builds fine.)
+* httpd trunk:
+  * Patch httpd trunk (r1586719 or later) with src/proto1/httpd.patch, and build using OpenSSL 1.0.2-beta1 or later
+* httpd 2.4.9:
+  * T.B.D.
 * If you want to store CT log configuration in a database, which will allow dynamic updates in the future, use a build of APR-Util with SQLite3 database support (--with-sqlite3) **and** use CTLogConfigDB instead of CTStaticLogConfig.
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Unix: Build mod\_ssl\_ct with apxs, adding -I/path/to/openssl/include
