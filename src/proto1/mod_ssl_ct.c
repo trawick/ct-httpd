@@ -2494,19 +2494,17 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
     return conf;
 }
 
-static int ssl_ct_proxy_http_cleanup(request_rec *r, conn_rec *origin,
-                                     proxy_conn_rec *backend)
+static int ssl_ct_detach_backend(request_rec *r,
+                                 proxy_conn_rec *backend)
 {
-    if (!origin && backend) {
-        origin = backend->connection;
-    }
+    conn_rec *origin = backend->connection;
 
     if (origin) {
         ct_conn_config *conncfg = get_conn_config(origin);
         char *list, *last;
 
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                      "ssl_ct_proxy_http_cleanup, %d%d%d",
+                      "ssl_ct_detach_backend, %d%d%d",
                       conncfg->server_cert_has_sct_list,
                       conncfg->serverhello_has_sct_list,
                       conncfg->ocsp_has_sct_list);
@@ -2531,7 +2529,7 @@ static int ssl_ct_proxy_http_cleanup(request_rec *r, conn_rec *origin,
     else {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                       "No backend connection available in "
-                      "ssl_ct_proxy_http_cleanup(); assuming peer unaware");
+                      "ssl_ct_detach_backend(); assuming peer unaware");
         apr_table_set(r->subprocess_env, STATUS_VAR,
                       STATUS_VAR_UNAWARE_VAL);
     }
@@ -2546,7 +2544,7 @@ static void ct_register_hooks(apr_pool_t *p)
     ap_hook_post_config(ssl_ct_post_config, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_post_read_request(ssl_ct_post_read_request, NULL, NULL, APR_HOOK_MIDDLE);
     ap_hook_child_init(ssl_ct_child_init, NULL, NULL, APR_HOOK_MIDDLE);
-    APR_OPTIONAL_HOOK(proxy, proxy_http_cleanup, ssl_ct_proxy_http_cleanup, NULL, NULL,
+    APR_OPTIONAL_HOOK(proxy, detach_backend, ssl_ct_detach_backend, NULL, NULL,
                       APR_HOOK_MIDDLE);
     APR_OPTIONAL_HOOK(ssl, ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
                       APR_HOOK_MIDDLE);

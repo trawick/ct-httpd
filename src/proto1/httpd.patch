@@ -1,6 +1,6 @@
 Index: CMakeLists.txt
 ===================================================================
---- CMakeLists.txt	(revision 1582859)
+--- CMakeLists.txt	(revision 1586717)
 +++ CMakeLists.txt	(working copy)
 @@ -409,6 +409,7 @@
  SET(mod_session_crypto_extra_libs    mod_session)
@@ -10,82 +10,9 @@ Index: CMakeLists.txt
  SET(mod_ssl_requires                 OPENSSL_FOUND)
  IF(OPENSSL_FOUND)
    SET(mod_ssl_extra_includes           ${OPENSSL_INCLUDE_DIR})
-Index: modules/proxy/mod_proxy.c
-===================================================================
---- modules/proxy/mod_proxy.c	(revision 1582859)
-+++ modules/proxy/mod_proxy.c	(working copy)
-@@ -2779,3 +2779,7 @@
-                                     (int *status, request_rec *r),
-                                     (status, r),
-                                     OK, DECLINED)
-+APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(proxy, PROXY, int, proxy_http_cleanup,
-+                                    (request_rec *r, conn_rec *origin, proxy_conn_rec *backend),
-+                                    (r, origin, backend), OK, DECLINED)
-+
-Index: modules/proxy/mod_proxy.h
-===================================================================
---- modules/proxy/mod_proxy.h	(revision 1582859)
-+++ modules/proxy/mod_proxy.h	(working copy)
-@@ -512,6 +512,9 @@
- APR_DECLARE_EXTERNAL_HOOK(proxy, PROXY, int, create_req, (request_rec *r, request_rec *pr))
- APR_DECLARE_EXTERNAL_HOOK(proxy, PROXY, int, fixups, (request_rec *r))
- 
-+APR_DECLARE_EXTERNAL_HOOK(proxy, PROXY, int, proxy_http_cleanup, (request_rec *r,
-+                                                                  conn_rec *origin, proxy_conn_rec *backend))
-+
- /**
-  * pre request hook.
-  * It will return the most suitable worker at the moment
-@@ -533,6 +536,13 @@
-                           proxy_server_conf *conf))
- 
- /**
-+ * proxy http cleanup hook.
-+ * It is called for HTTP proxy just before ap_proxy_release_connection().
-+ */
-+AP_DECLARE_HOOK(int, proxy_http_cleanup,(request_rec *r, conn_rec *origin, 
-+                                         proxy_conn_rec *backend))
-+
-+/**
-  * request status hook
-  * It is called after all proxy processing has been done.  This gives other
-  * modules a chance to create default content on failure, for example
-Index: modules/proxy/mod_proxy_http.c
-===================================================================
---- modules/proxy/mod_proxy_http.c	(revision 1582859)
-+++ modules/proxy/mod_proxy_http.c	(working copy)
-@@ -1879,6 +1879,7 @@
-     proxy_conn_rec *backend = NULL;
-     int is_ssl = 0;
-     conn_rec *c = r->connection;
-+    conn_rec *origin = NULL;
-     int retry = 0;
-     /*
-      * Use a shorter-lived pool to reduce memory usage
-@@ -2019,6 +2020,7 @@
-         }
- 
-         /* Step Five: Receive the Response... Fall thru to cleanup */
-+        origin = backend->connection;
-         status = ap_proxy_http_process_response(p, r, &backend, worker,
-                                                 conf, server_portstr);
- 
-@@ -2027,6 +2029,7 @@
- 
-     /* Step Six: Clean Up */
- cleanup:
-+    proxy_run_proxy_http_cleanup(r, origin, backend);
-     if (backend) {
-         if (status != OK)
-             backend->close = 1;
-@@ -2076,4 +2079,3 @@
-     NULL,              /* command apr_table_t */
-     ap_proxy_http_register_hook/* register hooks */
- };
--
 Index: modules/ssl/mod_ssl.c
 ===================================================================
---- modules/ssl/mod_ssl.c	(revision 1582859)
+--- modules/ssl/mod_ssl.c	(revision 1586717)
 +++ modules/ssl/mod_ssl.c	(working copy)
 @@ -37,6 +37,10 @@
  int ssl_running_on_valgrind = 0;
@@ -98,7 +25,7 @@ Index: modules/ssl/mod_ssl.c
  /*
   *  the table of configuration directives we provide
   */
-@@ -466,6 +470,7 @@
+@@ -468,6 +472,7 @@
      SSL *ssl;
      SSLConnRec *sslconn = myConnConfig(c);
      char *vhost_md5;
@@ -106,7 +33,7 @@ Index: modules/ssl/mod_ssl.c
      modssl_ctx_t *mctx;
      server_rec *server;
  
-@@ -498,6 +503,11 @@
+@@ -500,6 +505,11 @@
          return DECLINED; /* XXX */
      }
  
@@ -120,7 +47,7 @@ Index: modules/ssl/mod_ssl.c
  
 Index: modules/ssl/mod_ssl.h
 ===================================================================
---- modules/ssl/mod_ssl.h	(revision 1582859)
+--- modules/ssl/mod_ssl.h	(revision 1586717)
 +++ modules/ssl/mod_ssl.h	(working copy)
 @@ -98,5 +98,43 @@
                                                     ssl_npn_advertise_protos advertisefn,
@@ -168,7 +95,7 @@ Index: modules/ssl/mod_ssl.h
  /** @} */
 Index: modules/ssl/ssl_engine_init.c
 ===================================================================
---- modules/ssl/ssl_engine_init.c	(revision 1582859)
+--- modules/ssl/ssl_engine_init.c	(revision 1586717)
 +++ modules/ssl/ssl_engine_init.c	(working copy)
 @@ -27,8 +27,16 @@
                                    see Recursive.''
@@ -228,7 +155,7 @@ Index: modules/ssl/ssl_engine_init.c
  
 Index: modules/ssl/ssl_engine_io.c
 ===================================================================
---- modules/ssl/ssl_engine_io.c	(revision 1582859)
+--- modules/ssl/ssl_engine_io.c	(revision 1586717)
 +++ modules/ssl/ssl_engine_io.c	(working copy)
 @@ -31,6 +31,10 @@
  #include "mod_ssl.h"
@@ -269,7 +196,7 @@ Index: modules/ssl/ssl_engine_io.c
              apr_table_setn(c->notes, "SSL_connect_rv", "err");
 Index: modules/ssl/ssl_engine_kernel.c
 ===================================================================
---- modules/ssl/ssl_engine_kernel.c	(revision 1582859)
+--- modules/ssl/ssl_engine_kernel.c	(revision 1586717)
 +++ modules/ssl/ssl_engine_kernel.c	(working copy)
 @@ -32,6 +32,10 @@
  #include "mod_ssl.h"
