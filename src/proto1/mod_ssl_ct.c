@@ -1417,16 +1417,6 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
     }
 }
 
-static int ssl_ct_ssl_server_init(server_rec *s, SSL_CTX *ctx)
-{
-    ct_server_config *sconf = ap_get_module_config(s->module_config,
-                                                   &ssl_ct_module);
-
-    look_for_server_certs(s, ctx, sconf->sct_storage);
-
-    return OK;
-}
-
 static ct_conn_config *get_conn_config(conn_rec *c)
 {
     ct_conn_config *conncfg =
@@ -2230,7 +2220,7 @@ static void tlsext_cb(SSL *ssl, int client_server, int type,
     }
 }
 
-static int ssl_ct_ssl_new_client_pre_handshake(conn_rec *c, SSL *ssl)
+static int ssl_ct_pre_handshake(conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "client connected (pre-handshake)");
 
@@ -2246,7 +2236,8 @@ static int ssl_ct_ssl_new_client_pre_handshake(conn_rec *c, SSL *ssl)
     return OK;
 }
 
-static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, int is_proxy, SSL_CTX *ssl_ctx)
+static int ssl_ct_init_server(server_rec *s, apr_pool_t *p, int is_proxy,
+                              SSL_CTX *ssl_ctx)
 {
     ct_callback_info *cbi = apr_pcalloc(p, sizeof *cbi);
     ct_server_config *sconf = ap_get_module_config(s->module_config,
@@ -2274,6 +2265,8 @@ static int ssl_ct_ssl_init_ctx(server_rec *s, apr_pool_t *p, int is_proxy, SSL_C
         SSL_CTX_set_tlsext_status_arg(ssl_ctx, cbi);
     }
     else if (!is_proxy) {
+        look_for_server_certs(s, ssl_ctx, sconf->sct_storage);
+
         /* _srv_ = "server" */
         if (!SSL_CTX_set_custom_srv_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         server_extension_callback_1,
@@ -2546,12 +2539,10 @@ static void ct_register_hooks(apr_pool_t *p)
     ap_hook_child_init(ssl_ct_child_init, NULL, NULL, APR_HOOK_MIDDLE);
     APR_OPTIONAL_HOOK(proxy, detach_backend, ssl_ct_detach_backend, NULL, NULL,
                       APR_HOOK_MIDDLE);
-    APR_OPTIONAL_HOOK(ssl, ssl_server_init, ssl_ct_ssl_server_init, NULL, NULL, 
+    APR_OPTIONAL_HOOK(ssl, init_server, ssl_ct_init_server, NULL, NULL,
                       APR_HOOK_MIDDLE);
-    APR_OPTIONAL_HOOK(ssl, ssl_init_ctx, ssl_ct_ssl_init_ctx, NULL, NULL,
-                      APR_HOOK_MIDDLE);
-    APR_OPTIONAL_HOOK(ssl, ssl_new_client_pre_handshake,
-                      ssl_ct_ssl_new_client_pre_handshake,
+    APR_OPTIONAL_HOOK(ssl, pre_handshake,
+                      ssl_ct_pre_handshake,
                       NULL, NULL, APR_HOOK_MIDDLE);
     APR_OPTIONAL_HOOK(ssl, ssl_proxy_verify, ssl_ct_ssl_proxy_verify,
                       NULL, NULL, APR_HOOK_MIDDLE);

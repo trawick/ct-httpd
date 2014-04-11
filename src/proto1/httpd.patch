@@ -18,7 +18,7 @@ Index: modules/ssl/mod_ssl.c
  int ssl_running_on_valgrind = 0;
  #endif
  
-+APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ssl, SSL, int, ssl_new_client_pre_handshake,
++APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ssl, SSL, int, pre_handshake,
 +                                    (conn_rec *c,SSL *ssl),
 +                                    (c,ssl), OK, DECLINED);
 +
@@ -37,7 +37,7 @@ Index: modules/ssl/mod_ssl.c
          return DECLINED; /* XXX */
      }
  
-+    rc = ssl_run_ssl_new_client_pre_handshake(c, ssl);
++    rc = ssl_run_pre_handshake(c, ssl);
 +    if (rc != OK && rc != DECLINED) {
 +        return rc;
 +    }
@@ -47,9 +47,9 @@ Index: modules/ssl/mod_ssl.c
  
 Index: modules/ssl/mod_ssl.h
 ===================================================================
---- modules/ssl/mod_ssl.h	(revision 1586717)
+--- modules/ssl/mod_ssl.h	(revision 1586727)
 +++ modules/ssl/mod_ssl.h	(working copy)
-@@ -98,5 +98,43 @@
+@@ -98,5 +98,60 @@
                                                     ssl_npn_advertise_protos advertisefn,
                                                     ssl_npn_proto_negotiated negotiatedfn));
  
@@ -85,10 +85,27 @@ Index: modules/ssl/mod_ssl.h
 +#define SSL_DECLARE_DATA             __declspec(dllimport)
 +#endif
 +
-+APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, ssl_server_init, (server_rec *,SSL_CTX *))
-+APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, ssl_new_client_pre_handshake, (conn_rec *,SSL *ssl))
++/**
++ * init_server hook -- allow SSL_CTX-specific initialization to be performed by
++ * a module for each SSL-enabled server (one at a time)
++ * @param s SSL-enabled [virtual] server
++ * @param p pconf pool
++ * @param is_proxy 1 if this server supports backend connections
++ * over SSL/TLS, 0 if it supports client connections over SSL/TLS
++ * @param ctx OpenSSL SSL Context for the server
++ */
++APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, init_server,
++                          (server_rec *s, apr_pool_t *p, int is_proxy, SSL_CTX *ctx))
++
++/**
++ * pre_handshake hook
++ * @param c conn_rec for new connection from client or to backend server
++ * @param ssl OpenSSL SSL Connection for the client or backend server
++ */
++APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, pre_handshake,
++                          (conn_rec *c, SSL *ssl))
++
 +APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, ssl_proxy_verify, (server_rec *,conn_rec *,X509_STORE_CTX *ctx))
-+APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, ssl_init_ctx, (server_rec *s,apr_pool_t *p,int is_proxy,SSL_CTX *ctx))
 +APR_DECLARE_EXTERNAL_HOOK(ssl, SSL, int, ssl_proxy_post_handshake, (server_rec *,conn_rec *))
 +
  #endif /* __MOD_SSL_H__ */
@@ -97,42 +114,39 @@ Index: modules/ssl/ssl_engine_init.c
 ===================================================================
 --- modules/ssl/ssl_engine_init.c	(revision 1586717)
 +++ modules/ssl/ssl_engine_init.c	(working copy)
-@@ -27,8 +27,16 @@
+@@ -27,8 +27,13 @@
                                    see Recursive.''
                                          -- Unknown   */
  #include "ssl_private.h"
 +#include "mod_ssl.h"
  #include "mpm_common.h"
  
-+APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ssl, SSL, int, ssl_server_init,
-+                                    (server_rec *s,SSL_CTX *ctx),
-+                                    (s,ctx), OK, DECLINED)
-+APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ssl, SSL, int, ssl_init_ctx,
++APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ssl, SSL, int, init_server,
 +                                    (server_rec *s,apr_pool_t *p,int is_proxy,SSL_CTX *ctx),
-+                                    (s,p,is_proxy,ctx), OK, DECLINED);
++                                    (s,p,is_proxy,ctx), OK, DECLINED)
 +
  /*  _________________________________________________________________
  **
  **  Module Initialization
-@@ -248,6 +256,25 @@
+@@ -248,6 +253,25 @@
          return rv;
      }
  
 +    for (s = base_server; s; s = s->next) {
 +        sc = mySrvConfig(s);
 +
-+        if (sc->enabled == SSL_ENABLED_TRUE) {
-+            if (sc->server && sc->server->ssl_ctx && sc->server->pks) {
-+                if ((rv = ssl_run_ssl_server_init(s, sc->server->ssl_ctx)) != APR_SUCCESS) {
-+                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, APLOGNO()
-+                                 "Init: ssl_server_init failed");
-+                    return rv;
-+                }
++        if (sc->enabled == SSL_ENABLED_TRUE || sc->enabled == SSL_ENABLED_OPTIONAL) {
++            if ((rv = ssl_run_init_server(s, p, 0, sc->server->ssl_ctx)) != APR_SUCCESS) {
++                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, APLOGNO()
++                             "Init: server init_server failed");
++                return rv;
 +            }
-+            else {
-+                ap_log_error(APLOG_MARK, APLOG_CRIT, 0, s, APLOGNO()
-+                             "Init: some interesting stuff is missing");
-+                return HTTP_INTERNAL_SERVER_ERROR;
++        }
++        else if (sc->proxy_enabled == SSL_ENABLED_TRUE) {
++            if ((rv = ssl_run_init_server(s, p, 1, sc->proxy->ssl_ctx)) != APR_SUCCESS) {
++                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s, APLOGNO()
++                             "Init: proxy init_server failed");
++                return rv;
 +            }
 +        }
 +    }
@@ -140,19 +154,6 @@ Index: modules/ssl/ssl_engine_init.c
      /*
       *  Announce mod_ssl and SSL library in HTTP Server field
       *  as ``mod_ssl/X.X.X OpenSSL/X.X.X''
-@@ -815,6 +842,12 @@
- #endif
-     }
- 
-+    if ((rv = ssl_run_ssl_init_ctx(s, p,
-+                                   mctx->sc && mctx->sc->proxy_enabled,
-+                                   mctx->ssl_ctx)) != APR_SUCCESS) {
-+        return rv;
-+    }
-+
-     return APR_SUCCESS;
- }
- 
 Index: modules/ssl/ssl_engine_io.c
 ===================================================================
 --- modules/ssl/ssl_engine_io.c	(revision 1586717)
