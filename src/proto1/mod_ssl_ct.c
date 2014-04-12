@@ -1953,13 +1953,13 @@ static int client_extension_callback_2(SSL *ssl, unsigned short ext_type,
  *   at the OpenSSL "input" chain.
  */
 static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
-                                   X509_STORE_CTX *ctx)
+                                   STACK_OF(X509) *chain)
 {
     apr_pool_t *p = c->pool;
     ct_conn_config *conncfg = get_conn_config(c);
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
-    int chain_size = sk_X509_num(ctx->chain);
+    int chain_size = sk_X509_num(chain);
     int extension_index;
     cert_chain *certs;
 
@@ -1980,7 +1980,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
      *       verified chain.
      */
 
-    certs = cert_chain_init(p, ctx->chain);
+    certs = cert_chain_init(p, chain);
     conncfg->certs = certs;
 
     extension_index = 
@@ -2017,20 +2017,24 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
     return OK;
 }
 
-static int ssl_ct_ssl_proxy_post_handshake(server_rec *s, conn_rec *c)
+static int ssl_ct_proxy_post_handshake(conn_rec *c, SSL *ssl)
 {
     apr_pool_t *p = c->pool;
     apr_status_t rv = APR_SUCCESS;
     const char *key;
     ct_cached_server_data *cached;
     ct_conn_config *conncfg = get_conn_config(c);
+    server_rec *s = c->base_server;
     ct_server_config *sconf = ap_get_module_config(s->module_config,
                                                    &ssl_ct_module);
     int validation_error = 0, missing_sct_error = 0;
+    STACK_OF(X509) *chain = SSL_get_peer_cert_chain(ssl);
 
     if (sconf->proxy_awareness == PROXY_OBLIVIOUS) {
         return OK;
     }
+
+    ssl_ct_ssl_proxy_verify(s, c, chain);
 
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                   "finally at the point where we can see where SCTs came from"
@@ -2544,9 +2548,7 @@ static void ct_register_hooks(apr_pool_t *p)
     APR_OPTIONAL_HOOK(ssl, pre_handshake,
                       ssl_ct_pre_handshake,
                       NULL, NULL, APR_HOOK_MIDDLE);
-    APR_OPTIONAL_HOOK(ssl, ssl_proxy_verify, ssl_ct_ssl_proxy_verify,
-                      NULL, NULL, APR_HOOK_MIDDLE);
-    APR_OPTIONAL_HOOK(ssl, ssl_proxy_post_handshake, ssl_ct_ssl_proxy_post_handshake,
+    APR_OPTIONAL_HOOK(ssl, proxy_post_handshake, ssl_ct_proxy_post_handshake,
                       NULL, NULL, APR_HOOK_MIDDLE);
 }
 
