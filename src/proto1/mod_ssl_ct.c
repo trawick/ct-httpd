@@ -1358,7 +1358,7 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
 
     rc = SSL_CTX_set_current_cert(ctx, SSL_CERT_SET_FIRST);
     while (rc) {
-        x = SSL_CTX_get0_certificate(ctx);
+        x = SSL_CTX_get0_certificate(ctx); /* UNDOC */
         if (x) {
             fingerprint = get_cert_fingerprint(s->process->pool, x);
             rv = ctutil_path_join(&cert_sct_dir, sct_dir, fingerprint, p, s);
@@ -1392,11 +1392,11 @@ static void look_for_server_certs(server_rec *s, SSL_CTX *ctx, const char *sct_d
              *   201402.mbox/%3CCAKUrXK5-2_Sg8FokxBP8nW7tmSuTZZWL-%3
              *   DBDhNnwyK-Z4dmQiQ%40mail.gmail.com%3E
              */
-            SSL_CTX_get_extra_chain_certs(ctx, &chain);
+            SSL_CTX_get_extra_chain_certs(ctx, &chain); /* UNDOC */
 
             if (chain) {
-                for (i = 0; i < sk_X509_num(chain); i++) {
-                    X509 *x = sk_X509_value(chain, i);
+                for (i = 0; i < sk_X509_num(chain); i++) { /* UNDOC */
+                    X509 *x = sk_X509_value(chain, i); /* UNDOC */
                     ap_assert(1 == PEM_write_X509(concat, x));
                 }
             }
@@ -1464,7 +1464,7 @@ static cert_chain *cert_chain_init(apr_pool_t *p, STACK_OF(X509) *chain)
 
     for (i = 0; i < sk_X509_num(chain); i++) {
         X509 **spot = apr_array_push(cc->cert_arr);
-        *spot = X509_dup(sk_X509_value(chain, i));
+        *spot = X509_dup(sk_X509_value(chain, i)); /* UNDOC */
         if (i == 0) {
             cc->leaf = *spot;
         }
@@ -1495,8 +1495,8 @@ static const char *gen_key(conn_rec *c, cert_chain *cc,
 
     fp = get_cert_fingerprint(c->pool, cc->leaf);
 
-    SHA256_Init(&sha256ctx);
-    SHA256_Update(&sha256ctx, (unsigned char *)fp, strlen(fp));
+    SHA256_Init(&sha256ctx); /* UNDOC */
+    SHA256_Update(&sha256ctx, (unsigned char *)fp, strlen(fp)); /* UNDOC */
     if (conncfg->cert_sct_list) {
         SHA256_Update(&sha256ctx, conncfg->cert_sct_list, 
                       conncfg->cert_sct_list_size);
@@ -1509,7 +1509,7 @@ static const char *gen_key(conn_rec *c, cert_chain *cc,
         SHA256_Update(&sha256ctx, conncfg->ocsp_sct_list,
                       conncfg->ocsp_sct_list_size);
     }
-    SHA256_Final(digest, &sha256ctx);
+    SHA256_Final(digest, &sha256ctx); /* UNDOC */
     return apr_pescape_hex(c->pool, digest, sizeof digest, 0);
 }
 
@@ -1837,7 +1837,7 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
     OCSP_SINGLERESP *single;
     STACK_OF(X509_EXTENSION) *exts;
 
-    len = SSL_get_tlsext_status_ocsp_resp(ssl, &p);
+    len = SSL_get_tlsext_status_ocsp_resp(ssl, &p); /* UNDOC */
     if (!p) {
         /* normal case */
         ap_log_cerror(APLOG_MARK, APLOG_TRACE1, 0, c,
@@ -1845,14 +1845,14 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
         return 1;
     }
 
-    rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
+    rsp = d2i_OCSP_RESPONSE(NULL, &p, len); /* UNDOC */
     if (!rsp) {
         ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
                       "Error parsing OCSP response");
         return 0;
     }
 
-    br = OCSP_response_get1_basic(rsp);
+    br = OCSP_response_get1_basic(rsp); /* UNDOC */
     if (!br) {
         ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
                       "no OCSP basic response");
@@ -1861,18 +1861,18 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
 
     rd = br->tbsResponseData;
 
-    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
+    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) { /* UNDOC */
         X509_EXTENSION *ext;
         int idx;
         ASN1_OCTET_STRING *oct;
 
-        single = sk_OCSP_SINGLERESP_value(rd->responses, i);
+        single = sk_OCSP_SINGLERESP_value(rd->responses, i); /* UNDOC */
         if (!single) {
             continue;
         }
 
         idx = OCSP_SINGLERESP_get_ext_by_NID(single,
-                                             NID_ct_cert_scts, -1);
+                                             NID_ct_cert_scts, -1); /* UNDOC */
 
         if (idx == -1) {
             continue;
@@ -1883,8 +1883,8 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
 
         exts = single->singleExtensions;
 
-        ext = sk_X509_EXTENSION_value(exts, idx);
-        oct = X509_EXTENSION_get_data(ext);
+        ext = sk_X509_EXTENSION_value(exts, idx); /* UNDOC */
+        oct = X509_EXTENSION_get_data(ext); /* UNDOC */
 
         conncfg->ocsp_has_sct_list = 1;
         conncfg->peer_ct_aware = 1;
@@ -1893,7 +1893,7 @@ static int ocsp_resp_cb(SSL *ssl, void *arg)
                                              conncfg->ocsp_sct_list_size);
     }
 
-    OCSP_RESPONSE_free(rsp);
+    OCSP_RESPONSE_free(rsp); /* UNDOC */
 
     return 1;
 }
@@ -1997,7 +1997,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
         ext_struct = X509_get_ext_d2i(certs->leaf,
                                       NID_ct_precert_scts,
                                       NULL, /* ignore criticality of extension */
-                                      NULL);
+                                      NULL); /* UNDOC */
 
         if (ext_struct == NULL) {
             ap_log_cerror(APLOG_MARK, APLOG_ERR, 0, c,
@@ -2010,7 +2010,7 @@ static int ssl_ct_ssl_proxy_verify(server_rec *s, conn_rec *c,
                                                  octet->data,
                                                  octet->length);
             conncfg->cert_sct_list_size = octet->length;
-            ASN1_OCTET_STRING_free(octet);
+            ASN1_OCTET_STRING_free(octet); /* UNDOC */
         }
     }
 
@@ -2228,14 +2228,14 @@ static int ssl_ct_pre_handshake(conn_rec *c, SSL *ssl)
 {
     ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c, "client connected (pre-handshake)");
 
-    SSL_set_tlsext_status_type(ssl, TLSEXT_STATUSTYPE_ocsp);
+    SSL_set_tlsext_status_type(ssl, TLSEXT_STATUSTYPE_ocsp); /* UNDOC */
 
     /* This callback is needed only to determine that the peer is CT-aware
      * when resuming a session.  For an initial handshake, the callbacks
      * registered via SSL_CTX_set_custom_srv_ext() are sufficient.
      */
-    SSL_set_tlsext_debug_callback(ssl, tlsext_cb);
-    SSL_set_tlsext_debug_arg(ssl, c);
+    SSL_set_tlsext_debug_callback(ssl, tlsext_cb); /* UNDOC */
+    SSL_set_tlsext_debug_arg(ssl, c); /* UNDOC */
 
     return OK;
 }
@@ -2253,7 +2253,7 @@ static int ssl_ct_init_server(server_rec *s, apr_pool_t *p, int is_proxy,
         /* _cli_ = "client" */
         if (!SSL_CTX_set_custom_cli_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         client_extension_callback_1,
-                                        client_extension_callback_2, cbi)) {
+                                        client_extension_callback_2, cbi)) { /* UNDOC */
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
                          "Unable to initalize Certificate Transparency client "
                          "extension callbacks (callback for %d already registered?)",
@@ -2265,8 +2265,8 @@ static int ssl_ct_init_server(server_rec *s, apr_pool_t *p, int is_proxy,
          * currently only sets this on the server SSL_CTX, when OCSP is
          * enabled.
          */
-        SSL_CTX_set_tlsext_status_cb(ssl_ctx, ocsp_resp_cb);
-        SSL_CTX_set_tlsext_status_arg(ssl_ctx, cbi);
+        SSL_CTX_set_tlsext_status_cb(ssl_ctx, ocsp_resp_cb); /* UNDOC */
+        SSL_CTX_set_tlsext_status_arg(ssl_ctx, cbi); /* UNDOC */
     }
     else if (!is_proxy) {
         look_for_server_certs(s, ssl_ctx, sconf->sct_storage);
@@ -2274,7 +2274,7 @@ static int ssl_ct_init_server(server_rec *s, apr_pool_t *p, int is_proxy,
         /* _srv_ = "server" */
         if (!SSL_CTX_set_custom_srv_ext(ssl_ctx, CT_EXTENSION_TYPE,
                                         server_extension_callback_1,
-                                        server_extension_callback_2, cbi)) {
+                                        server_extension_callback_2, cbi)) { /* UNDOC */
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, s,
                          "Unable to initalize Certificate Transparency server "
                          "extension callback (callbacks for %d already registered?)",
