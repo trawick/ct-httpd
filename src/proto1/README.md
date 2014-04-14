@@ -43,7 +43,7 @@ The primary sources of SCTs sent to clients in server mode are
 * included in a certificate extension
 * included in the stapled OCSP response
 
-In addition, the administrator can statically configure one or more SCTs for a particular server certificate.  This is configured by using the CTStaticSCTs directive to associate a directory maintained by the administrator with a server certificate; any files in that directory with extension .sct will also be sent when the certificate is used.
+In addition, the administrator can statically configure one or more SCTs for a particular server certificate.  This is configured by using the CTStaticSCTs directive to associate a directory maintained by the administrator with a server certificate; any files in that directory with extension .sct will also be sent in the ServerHello when the certificate is used.
 
 At run-time, a tree of directories contains SCTs fetched from logs as well as a SCT list built from fetched and configured SCTs.  The base of this directory tree is configured with the CTSCTStorage directive, and the certificate-specific directory name is the lower-case hex encoding of the SHA-256 hash of the DER form of the server leaf certificate.
 
@@ -85,6 +85,7 @@ As an optimization, on-line verification and storing of data from the server is 
   * The key is currently the SHA-256 digest of the leaf certificate and set of SCTs, in printable hex format.
 * Each certificate is represented by CERT_START (0x0003) and three-byte length followed by the certificate in DER.
 * Each SCT is represented by SCT_START (0x0004) and two-byte length followed by the SCT.
+* The ctauditscts utility parses the files and interfaces with certificate transparency tools for auditing.  (more about this below)
 
 Prerequisites
 =============
@@ -111,7 +112,7 @@ This is absolutely required for web server/proxy support.
 
 ## Python 2.x
 
-2.7 is fine.  It has not been tested with 2.6 or earlier.  Python is required for manipulation of the log config database and for performing an off-line audit of SCTs received by proxy.  Neither of these has to be performed on the web server/proxy machine.
+2.7 is fine.  It has not been tested with Python 3 or earlier Python 2.  Python is required for manipulation of the log config database and for performing an off-line audit of SCTs received by proxy.  Neither of these has to be performed on the web server/proxy machine.
 
 Build
 =====
@@ -165,7 +166,7 @@ Configure mod\_ssl\_ct like this:
 
 # Performing off-line auditing 
 
-* Apply the patch in file verify\_single\_proof.patch to the verify\_single\_proof.py script in the certificate-transparency tools.
+* If using certificate-transparency tools from before April 10, 2014: Apply the patch in file verify\_single\_proof.patch to the verify\_single\_proof.py script in the certificate-transparency tools.
 * Set PYTHONPATH to find the necessary certificate-transparency libraries (probably just the src/python directory).  You may also have to add /usr/local/include if protobuf was installed to /usr/local.
 * Set PATH to include the certificate-transparency/src/python/ct/client/tools directory.
 * Run ctauditscts; the single required parameter is the value of the CTAuditStorage directive.
