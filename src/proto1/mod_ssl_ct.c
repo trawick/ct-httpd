@@ -66,6 +66,7 @@
 
 #include "mod_proxy.h"
 #include "mod_ssl.h"
+#include "mod_ssl_openssl.h"
 
 #include "ssl_ct_util.h"
 #include "ssl_ct_sct.h"

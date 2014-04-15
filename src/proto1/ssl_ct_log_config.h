@@ -18,6 +18,7 @@
 #define SSL_CT_LOG_CONFIG_H
 
 #include "httpd.h"
+#include "mod_ssl_openssl.h" /* cheap way to get OpenSSL headers */
 
 typedef struct ct_log_config {
     const char *log_id; /* binary form */
