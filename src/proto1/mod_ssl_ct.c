@@ -62,6 +62,7 @@
 #include "http_main.h"
 #include "http_protocol.h"
 #include "util_mutex.h"
+#include "ap_listen.h"
 #include "ap_mpm.h"
 
 #include "mod_proxy.h"
@@ -958,6 +959,9 @@ static int sct_daemon(server_rec *s_main)
      * apr_signal(SIGCHLD, SIG_IGN);
      */
     apr_signal(SIGHUP, daemon_signal_handler);
+
+    /* Close our copy of the listening sockets */
+    ap_close_listeners();
 
     rv = apr_global_mutex_child_init(&ssl_ct_sct_update,
                                      apr_global_mutex_lockfile(ssl_ct_sct_update), pdaemon);
