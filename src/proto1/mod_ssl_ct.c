@@ -61,9 +61,14 @@
 #include "http_log.h"
 #include "http_main.h"
 #include "http_protocol.h"
+#include "mpm_common.h"
 #include "util_mutex.h"
 #include "ap_listen.h"
 #include "ap_mpm.h"
+
+#if AP_NEED_SET_MUTEX_PERMS
+#include "unixd.h"
+#endif
 
 #include "mod_proxy.h"
 #include "mod_ssl.h"
@@ -954,6 +959,7 @@ static int sct_daemon(server_rec *s_main)
     apr_pool_t *ptemp;
     ct_server_config *sconf = ap_get_module_config(s_main->module_config,
                                                    &ssl_ct_module);
+    int rc;
 
     /* Ignoring SIGCHLD results in errno ECHILD returned from apr_proc_wait().
      * apr_signal(SIGCHLD, SIG_IGN);
@@ -972,13 +978,48 @@ static int sct_daemon(server_rec *s_main)
         return DAEMON_STARTUP_ERROR;
     }
 
+    if (!geteuid()) {
+        /* Fix up permissions of the directories written to by the daemon
+         */
+        int i;
+        apr_array_header_t *subdirs = apr_array_make(pdaemon, 5, sizeof(char *));
+
+        *(const char **)apr_array_push(subdirs) = sconf->sct_storage;
+        *(const char **)apr_array_push(subdirs) = sconf->audit_storage;
+
+        rv = ctutil_read_dir(pdaemon, root_server, sconf->sct_storage, "*",
+                             &subdirs);
+        if (rv == APR_SUCCESS && subdirs->nelts > 0) {
+            const char * const *elts = (const char * const *)subdirs->elts;
+
+            for (i = 0; i < subdirs->nelts; i++) {
+                if (elts[i] && chown(elts[i], ap_unixd_config.user_id,
+                                     ap_unixd_config.group_id) < 0) {
+                    ap_log_error(APLOG_MARK, APLOG_ERR, errno, root_server,
+                                 "Couldn't change owner or group of directory %s",
+                                 elts[i]);
+                    return errno;
+                }
+            }
+        }
+        else {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, rv, root_server,
+                         "Did not read any entries from %s (no server certificate?)",
+                         sconf->sct_storage);
+        }
+    }
+
+    /* if running as root, switch to configured user/group */
+    if ((rc = ap_run_drop_privileges(pdaemon, ap_server_conf)) != 0) {
+        return rc;
+    }
+
     /* ptemp - temporary pool for refresh cycles */
     apr_pool_create(&ptemp, pdaemon);
 
     while (!daemon_should_exit) {
-        apr_sleep(apr_time_from_sec(30)); /* SIGHUP at restart/stop will break out */
-
         sct_daemon_cycle(sconf, s_main, ptemp, DAEMON_NAME);
+        apr_sleep(apr_time_from_sec(30)); /* SIGHUP at restart/stop will break out */
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s_main,
@@ -1232,14 +1273,31 @@ static int ssl_ct_post_config(apr_pool_t *pconf, apr_pool_t *plog,
     /* Ensure that we already have, or can fetch, fresh SCTs for each 
      * certificate.  If so, start the daemon to maintain these and let
      * startup continue.  (Otherwise abort startup.)
+     *
+     * Except when we start up as root.  We don't want to run external
+     * certificate-transparency tools as root, and we don't want to have
+     * to fix up the permissions of everything we created so that the
+     * SCT maintenance daemon can continue to maintain the SCTs as the
+     * configured User/Group.
      */
 
+#if AP_NEED_SET_MUTEX_PERMS /* Unix :) */
+    if (!geteuid()) { /* root */
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                     "SCTs will be fetched from configured logs as needed "
+                     "and may not be available immediately");
+    }
+    else {
+#endif
     rv = refresh_all_scts(s_main, pconf, active_log_config);
     if (rv != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rv, s_main,
                      "refresh_all_scts() failed");
         return HTTP_INTERNAL_SERVER_ERROR;
     }
+#if AP_NEED_SET_MUTEX_PERMS
+    }
+#endif
 
 #ifdef HAVE_SCT_DAEMON_CHILD
     if (ap_state_query(AP_SQ_MAIN_STATE) != AP_SQ_MS_CREATE_PRE_CONFIG) {
