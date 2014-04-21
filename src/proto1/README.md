@@ -148,7 +148,6 @@ Configure mod\_ssl\_ct like this:
     CTStaticLogConfig - - - - - http://localhost:8888/
     CTStaticLogConfig - - - - - http://otherhost:9999/
     CTStaticLogConfig - /path/to/log-public-key.pem - - - -
-    CTAuditStorage /tmp/audit
     CTSCTStorage /tmp/newscts
     CTToolsDir /home/trawick/git/certificate-transparency
     CTMaxSCTAge 3600           (1 hour)
@@ -158,6 +157,10 @@ Configure mod\_ssl\_ct like this:
 * If you want to statically define SCTs to return in addition to those from the log, put them individually in files with extension ".sct" in the directory for the server certificate specified by CTStaticSCTs.  A given directory can be used only for the specified certificate (one directory of static SCTs per server certificate).
 * You can configure information about CT logs external to the httpd configuration by using the ctlogconfig program to create a database, and point to the database using the CTLogConfigDB directive.  This requires SQLite3 support in APR-Util.
 * The statuscgi.py CGI script will display "peer-aware" or "peer-unaware" (and a few more standard SSL variables) based on whether or not mod\_ssl\_ct thinks the client understands CT.  (mod\_ssl+mod\_ssl\_ct+mod\_proxy and Chromium from the dev channel are both CT-aware clients.)
+* If you want to perform a detailed audit off-line, add something like this:
+```
+   CTAuditStorage /tmp/audit
+```
 
 ### Support for concise logging of limited information
 
@@ -170,7 +173,7 @@ Configure mod\_ssl\_ct like this:
 * Set PYTHONPATH to find the necessary certificate-transparency libraries (probably just the src/python directory).  You may also have to add /usr/local/include if protobuf was installed to /usr/local.
 * Set PATH to include the certificate-transparency/src/python/ct/client/tools directory.
 * Run ctauditscts; the single required parameter is the value of the CTAuditStorage directive.
-  * Provide a path to a log config db if the log URL for a given log id can be obtained.  (If not found, a default will be used.)
+  * Provide a path to a log config db if the log URL for a given log id can be obtained.  (If not found, a default log will be used.)
 
 ## Issues
 
