@@ -985,7 +985,9 @@ static int sct_daemon(server_rec *s_main)
         apr_array_header_t *subdirs = apr_array_make(pdaemon, 5, sizeof(char *));
 
         *(const char **)apr_array_push(subdirs) = sconf->sct_storage;
-        *(const char **)apr_array_push(subdirs) = sconf->audit_storage;
+        if (sconf->audit_storage) {
+            *(const char **)apr_array_push(subdirs) = sconf->audit_storage;
+        }
 
         rv = ctutil_read_dir(pdaemon, root_server, sconf->sct_storage, "*",
                              &subdirs);
@@ -1341,9 +1343,9 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
          * SSL proxy enabled and server-specific-sconf->proxy_awareness
          * != PROXY_OBLIVIOUS...
          */
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
-                     "Directive CTAuditStorage is required");
-        return HTTP_INTERNAL_SERVER_ERROR;
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s_main,
+                     "Directive CTAuditStorage isn't set; proxy will not save "
+                     "data for off-line audit");
     }
 
     if (!sconf->ct_tools_dir) {
@@ -2456,13 +2458,22 @@ static void ssl_ct_child_init(apr_pool_t *p, server_rec *s)
                               apr_pool_cleanup_null);
 
     if (sconf->proxy_awareness != PROXY_OBLIVIOUS) {
+        rv = apr_thread_mutex_create(&cached_server_data_mutex,
+                                     APR_THREAD_MUTEX_DEFAULT,
+                                     p);
+        if (rv != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
+                         "could not allocate a thread mutex");
+            /* might crash otherwise due to lack of checking for initialized data
+             * in all the right places, but this is going to skip pchild cleanup
+             */
+            exit(APEXIT_CHILDSICK);
+        }
+    }
+
+    if (sconf->proxy_awareness != PROXY_OBLIVIOUS && sconf->audit_storage) {
         rv = apr_thread_mutex_create(&audit_file_mutex,
                                      APR_THREAD_MUTEX_DEFAULT, p);
-        if (rv == APR_SUCCESS) {
-            rv = apr_thread_mutex_create(&cached_server_data_mutex,
-                                         APR_THREAD_MUTEX_DEFAULT,
-                                         p);
-        }
         if (rv != APR_SUCCESS) {
             ap_log_error(APLOG_MARK, APLOG_CRIT, rv, s,
                          "could not allocate a thread mutex");
