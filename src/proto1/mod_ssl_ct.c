@@ -2532,7 +2532,7 @@ static void *create_ct_server_config(apr_pool_t *p, server_rec *s)
     ct_server_config *conf =
         (ct_server_config *)apr_pcalloc(p, sizeof(ct_server_config));
 
-    conf->max_sct_age = apr_time_from_sec(3600);
+    conf->max_sct_age = apr_time_from_sec(3600 * 24);
     conf->proxy_awareness = PROXY_AWARENESS_UNSET;
     conf->max_sh_sct = 100;
     conf->static_cert_sct_dirs = apr_hash_make(p);
