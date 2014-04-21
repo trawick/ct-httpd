@@ -179,3 +179,10 @@ Configure mod\_ssl\_ct like this:
 
 * verify\_single\_proof.py is itself not complete; in particular, it does not report success/failure in an appropriate manner, so ctauditscts has no logic yet to detect success/failure.
 * Logging of the results from verification is needed, along with a mechanism for reporting exceptions; this needs verify\_single\_proof to be completed.
+
+In httpd trunk
+==============
+
+mod\_ssl\_ct is now in httpd trunk, though without all of the documentation in this file (yet).
+
+Revisions: 1588987
