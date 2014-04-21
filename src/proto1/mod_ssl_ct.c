@@ -117,7 +117,6 @@ typedef struct ct_server_config {
     apr_hash_t *static_cert_sct_dirs;
     const char *sct_storage;
     const char *audit_storage;
-    const char *ct_tools_dir;
     const char *ct_exe;
     const char *log_config_fname;
     apr_time_t max_sct_age;
@@ -1348,9 +1347,9 @@ static int ssl_ct_check_config(apr_pool_t *pconf, apr_pool_t *plog,
                      "data for off-line audit");
     }
 
-    if (!sconf->ct_tools_dir) {
+    if (!sconf->ct_exe) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s_main,
-                     "Directive CTToolsDir is required");
+                     "Directive CTLogClient is required");
         return HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -2550,7 +2549,7 @@ static void *merge_ct_server_config(apr_pool_t *p, void *basev, void *virtv)
 
     conf->sct_storage = base->sct_storage;
     conf->audit_storage = base->audit_storage;
-    conf->ct_tools_dir = base->ct_tools_dir;
+    conf->ct_exe = base->ct_exe;
     conf->max_sct_age = base->max_sct_age;
     conf->log_config_fname = base->log_config_fname;
     conf->db_log_config = base->db_log_config;
@@ -2881,9 +2880,8 @@ static const char *ct_static_scts(cmd_parms *cmd, void *x, const char *cert_fn,
     return NULL;
 }
 
-static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
+static const char *ct_log_client(cmd_parms *cmd, void *x, const char *arg)
 {
-    apr_status_t rv;
     ct_server_config *sconf = ap_get_module_config(cmd->server->module_config,
                                                    &ssl_ct_module);
     const char *err = ap_check_cmd_context(cmd, GLOBAL_ONLY);
@@ -2892,25 +2890,21 @@ static const char *ct_tools_dir(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    if (!ctutil_dir_exists(cmd->pool, arg)) {
-        return apr_pstrcat(cmd->pool, "CTToolsDir: Directory ", arg,
-                           " does not exist", NULL);
+    if (strcmp(DOTEXE, "")) {
+        if (!ctutil_file_exists(cmd->pool, arg)) {
+            arg = apr_pstrcat(cmd->pool, arg, DOTEXE, NULL);
+        }
     }
 
-    rv = ctutil_path_join((char **)&sconf->ct_exe, arg,  "src/client/ct" DOTEXE,
-                          cmd->pool, NULL);
-    if (rv != APR_SUCCESS) {
-        return apr_psprintf(cmd->pool,
-                            "CTToolsDir: Couldn't build path to ct" DOTEXE
-                            ": %pm", &rv);
+    if (!ctutil_file_exists(cmd->pool, arg)) {
+        return apr_pstrcat(cmd->pool,
+                           "CTLogClient: File ",
+                           arg,
+                           " does not exist",
+                           NULL);
     }
 
-    if (!ctutil_file_exists(cmd->pool, sconf->ct_exe)) {
-        return apr_pstrcat(cmd->pool, "CTToolsDir: File ", sconf->ct_exe,
-                           " does not exist", NULL);
-    }
-
-    sconf->ct_tools_dir = arg;
+    sconf->ct_exe = arg;
 
     return NULL;
 }
@@ -2963,13 +2957,13 @@ static const command_rec ct_cmds[] =
                               */
                   "Point to directory with static SCTs corresponding to the "
                   "specified certificate"),
-    AP_INIT_TAKE1("CTToolsDir", ct_tools_dir, NULL,
+    AP_INIT_TAKE1("CTLogClient", ct_log_client, NULL,
                   RSRC_CONF, /* GLOBAL_ONLY - otherwise, you couldn't share
                               * the same SCTs for a cert used by two
                               * different vhosts (and it would be just plain
                               * silly :) )
                               */
-                  "Location of certificate-transparency.org tools"),
+                  "Location of certificate-transparency.org (or compatible) log client tool"),
     {NULL}
 };
 
