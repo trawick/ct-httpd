@@ -2657,12 +2657,13 @@ static const char *ct_audit_storage(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    if (!ctutil_dir_exists(cmd->pool, arg)) {
-        return apr_pstrcat(cmd->pool, "CTAuditStorage: Directory ", arg,
+    sconf->audit_storage = ap_runtime_dir_relative(cmd->pool, arg);
+
+    if (!ctutil_dir_exists(cmd->pool, sconf->audit_storage)) {
+        return apr_pstrcat(cmd->pool, "CTAuditStorage: Directory ",
+                           sconf->audit_storage,
                            " does not exist", NULL);
     }
-
-    sconf->audit_storage = arg;
 
     return NULL;
 }
@@ -2677,7 +2678,7 @@ static const char *ct_log_config_db(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    sconf->log_config_fname = arg;
+    sconf->log_config_fname = ap_server_root_relative(cmd->pool, arg);
 
     return NULL;
 }
@@ -2734,12 +2735,13 @@ static const char *ct_sct_storage(cmd_parms *cmd, void *x, const char *arg)
         return err;
     }
 
-    if (!ctutil_dir_exists(cmd->pool, arg)) {
-        return apr_pstrcat(cmd->pool, "CTSCTStorage: Directory ", arg,
+    sconf->sct_storage = ap_runtime_dir_relative(cmd->pool, arg);
+
+    if (!ctutil_dir_exists(cmd->pool, sconf->sct_storage)) {
+        return apr_pstrcat(cmd->pool, "CTSCTStorage: Directory ",
+                           sconf->sct_storage,
                            " does not exist", NULL);
     }
-
-    sconf->sct_storage = arg;
 
     return NULL;
 }
@@ -2794,7 +2796,10 @@ static const char *ct_static_log_config(cmd_parms *cmd, void *x, int argc,
     if (!strcmp(public_key, "-")) {
         public_key = NULL;
     }
-    
+    else {
+        public_key = ap_server_root_relative(cmd->pool, public_key);
+    }
+
     distrusted = argv[cur_arg++];
     if (!strcmp(distrusted, "-")) {
         distrusted = NULL;
@@ -2844,6 +2849,9 @@ static const char *ct_static_scts(cmd_parms *cmd, void *x, const char *cert_fn,
     if (err) {
         return err;
     }
+
+    cert_fn = ap_server_root_relative(cmd->pool, cert_fn);
+    sct_dn = ap_server_root_relative(cmd->pool, sct_dn);
 
     rv = ctutil_fopen(cert_fn, "r", &pemfile);
     if (rv != APR_SUCCESS) {
