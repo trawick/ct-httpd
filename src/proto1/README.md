@@ -149,7 +149,7 @@ Configure mod\_ssl\_ct like this:
     CTStaticLogConfig - - - - - http://otherhost:9999/
     CTStaticLogConfig - /path/to/log-public-key.pem - - - -
     CTSCTStorage /tmp/newscts
-    CTToolsDir /home/trawick/git/certificate-transparency
+    CTLogClient /home/trawick/git/certificate-transparency/src/client/ct
     CTMaxSCTAge 3600           (1 hour)
     CTServerHelloSCTLimit 100    (essentially unlimited)
     # CTStaticSCTs /path/to/server-cert.pem /path/to/directory
