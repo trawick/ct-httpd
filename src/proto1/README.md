@@ -124,7 +124,7 @@ Build it like this:
 * httpd trunk:
   * Use r1587635 or later, and build using OpenSSL 1.0.2-beta1 or later
 * httpd 2.4.9:
-  * Trunk patches needed: r1586719, r1587607, r1587635
+  * Trunk patches needed: r1586719, r1587607, r1587635, r1588868
 * If you want to store CT log configuration in a database, which will allow dynamic updates, use a build of APR-Util with SQLite3 database support (--with-sqlite3) **and** use CTLogConfigDB instead of CTStaticLogConfig.
 * Build certificate-transparency tools from https://code.google.com/p/certificate-transparency/
 * Unix: Build mod\_ssl\_ct with apxs, adding -I/path/to/openssl/include
