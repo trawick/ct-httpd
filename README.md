@@ -8,7 +8,7 @@ httpd trunk as of r1589154 contains a new module, mod\_ssl\_ct,
 and new commands, ctlogconfig and ctauditscts, for deploying
 Certificate Transparency in an httpd server or proxy.
 
-* http://httpd.apache.org/docs/trunk/mod/mod\_ssl\_ct.html
+* http://httpd.apache.org/docs/trunk/mod/mod_ssl_ct.html
 * http://httpd.apache.org/docs/trunk/programs/ctlogconfig.html
 
 These features were originally maintained in this repository,
