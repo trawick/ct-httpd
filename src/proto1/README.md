@@ -185,5 +185,5 @@ In httpd trunk
 
 mod\_ssl\_ct is now in httpd trunk, though without all of the documentation in this file (yet).
 
-Revisions: 1588987, r1589009
+Revisions: 1588987, r1589009, r1589154
 
