@@ -8,6 +8,7 @@ The svn revisions needed are:
 * r1586719 - add the mod_proxy API
 * r1587607 - add the mod_ssl APIs, change cmake-based build for Windows to export new hooks
 * r1588868 - fix a warning in new mod_ssl APIs with some unknown level of gcc
+* r1589699 - export mod\_ssl APIs when using traditional Windows build mechanism
 
 These revisions are bundled in the following patch, which you can apply to a checkout of the httpd 2.4.x branch to add the APIs:
 
@@ -15,7 +16,7 @@ These revisions are bundled in the following patch, which you can apply to a che
 
 The patch has been tested with r1588854 but probably works with the 2.4.9 release tarballs as well.
 
-Build httpd as you normally would, ensuring that you have OpenSSL 1.0.2-beta1 or later.
+Build httpd as you normally would, ensuring that you have OpenSSL 1.0.2-beta1 or later so that mod\_ssl\_ct (which requires OpenSSL 1.0.2) and httpd and the rest of the modules are using the same level of OpenSSL.
 
 For example:
 ```
