@@ -9,11 +9,13 @@ The svn revisions needed are:
 * r1587607 - add the mod_ssl APIs, change cmake-based build for Windows to export new hooks
 * r1588868 - fix a warning in new mod_ssl APIs with some unknown level of gcc
 
-This patch should be applied to the httpd 2.4.x branch to add the APIs:
+These revisions are bundled in the following patch, which you can apply to a checkout of the httpd 2.4.x branch to add the APIs:
 
 * https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/httpd-2.4.x.patch
 
-Apply the patch to 2.4.*recent* and build it as you normally would, ensuring that you have OpenSSL 1.0.2-beta1 or later.
+The patch has been tested with r1588854 but probably works with the 2.4.9 release tarballs as well.
+
+Build httpd as you normally would, ensuring that you have OpenSSL 1.0.2-beta1 or later.
 
 For example:
 ```
@@ -39,7 +41,7 @@ $ /path/to/2.4.x/bin/apxs -ci -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_uti
 
 *TBD*
 
-(in short, do something fairly obvious with the CMakeLists.txt file in the src/proto1 subdir of this repo)
+(in short, do something fairly obvious with the CMakeLists.txt file in the src/proto1 subdir of this repo -- https://github.com/trawick/ct-httpd/blob/master/src/proto1/CMakeLists.txt)
 
 ## Command-line programs
 
