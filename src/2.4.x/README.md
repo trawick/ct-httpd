@@ -11,7 +11,7 @@ The svn revisions needed are:
 
 This patch should be applied to the httpd 2.4.x branch to add the APIs:
 
-* http://  https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/httpd-2.4.x.patch
+* https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/httpd-2.4.x.patch
 
 Apply the patch to 2.4.*recent* and build it as you normally would, ensuring that you have OpenSSL 1.0.2-beta1 or later.
 
