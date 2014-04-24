@@ -16,6 +16,11 @@ in the src/proto1 subdirectory.
 
 Further development will take place in ASF svn.
 
+A backport of the feature to the stable httpd 2.4.x branch
+is available here:
+
+* https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/
+
 Documentation here
 ==================
 
@@ -23,4 +28,5 @@ Documentation here
   https://github.com/trawick/ct-httpd/blob/master/src/proto1/README.md
 * Generic description of possible web server or proxy implementation:
   https://github.com/trawick/ct-httpd/blob/master/GenericServerAndProxy.md
-
+* Building mod\_ssl\_ct with the stable httpd 2.4.x branch:
+  https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/README.md
