@@ -6,7 +6,7 @@ Index: .
 Property changes on: .
 ___________________________________________________________________
 Modified: svn:mergeinfo
-   Merged /httpd/httpd/trunk:r1586719,1587607,1588868
+   Merged /httpd/httpd/trunk:r1586719,1587607,1588868,1589699
 Index: CMakeLists.txt
 ===================================================================
 --- CMakeLists.txt	(revision 1589546)
@@ -236,6 +236,28 @@ Index: modules/ssl/mod_ssl.c
      vhost_md5 = ap_md5_binary(c->pool, (unsigned char *)sc->vhost_id,
                                sc->vhost_id_len);
  
+Index: modules/ssl/mod_ssl.dsp
+===================================================================
+--- modules/ssl/mod_ssl.dsp	(revision 1589546)
++++ modules/ssl/mod_ssl.dsp	(working copy)
+@@ -43,7 +43,7 @@
+ # PROP Ignore_Export_Lib 0
+ # PROP Target_Dir ""
+ # ADD BASE CPP /nologo /MD /W3 /O2 /D "WIN32" /D "NDEBUG" /D "_WINDOWS" /FD /c
+-# ADD CPP /nologo /MD /W3 /O2 /Oy- /Zi /I "../../include" /I "../generators" /I "../../srclib/apr/include" /I "../../srclib/apr-util/include" /I "../../srclib/openssl/inc32" /D "NDEBUG" /D "WIN32" /D "_WINDOWS" /D "WIN32_LEAN_AND_MEAN" /D "NO_IDEA" /D "NO_RC5" /D "NO_MDC2" /D "OPENSSL_NO_IDEA" /D "OPENSSL_NO_RC5" /D "OPENSSL_NO_MDC2" /D "HAVE_OPENSSL" /D "HAVE_SSL_SET_STATE" /D "HAVE_OPENSSL_ENGINE_H" /D "HAVE_ENGINE_INIT" /D "HAVE_ENGINE_LOAD_BUILTIN_ENGINES" /Fd"Release\mod_ssl_src" /FD /c
++# ADD CPP /nologo /MD /W3 /O2 /Oy- /Zi /I "../../include" /I "../generators" /I "../../srclib/apr/include" /I "../../srclib/apr-util/include" /I "../../srclib/openssl/inc32" /D "NDEBUG" /D "WIN32" /D "_WINDOWS" /D "WIN32_LEAN_AND_MEAN" /D "NO_IDEA" /D "NO_RC5" /D "NO_MDC2" /D "OPENSSL_NO_IDEA" /D "OPENSSL_NO_RC5" /D "OPENSSL_NO_MDC2" /D "HAVE_OPENSSL" /D "HAVE_SSL_SET_STATE" /D "HAVE_OPENSSL_ENGINE_H" /D "HAVE_ENGINE_INIT" /D "HAVE_ENGINE_LOAD_BUILTIN_ENGINES" /D "SSL_DECLARE_EXPORT" /Fd"Release\mod_ssl_src" /FD /c
+ # ADD BASE MTL /nologo /D "NDEBUG" /win32
+ # ADD MTL /nologo /D "NDEBUG" /mktyplib203 /win32
+ # ADD BASE RSC /l 0x409 /d "NDEBUG"
+@@ -75,7 +75,7 @@
+ # PROP Ignore_Export_Lib 0
+ # PROP Target_Dir ""
+ # ADD BASE CPP /nologo /MDd /W3 /EHsc /Zi /Od /D "WIN32" /D "_DEBUG" /D "_WINDOWS" /FD /c
+-# ADD CPP /nologo /MDd /W3 /EHsc /Zi /Od /I "../../include" /I "../generators" /I "../../srclib/apr/include" /I "../../srclib/apr-util/include" /I "../../srclib/openssl/inc32" /D "_DEBUG" /D "WIN32" /D "_WINDOWS" /D "WIN32_LEAN_AND_MEAN" /D "NO_IDEA" /D "NO_RC5" /D "NO_MDC2" /D "OPENSSL_NO_IDEA" /D "OPENSSL_NO_RC5" /D "OPENSSL_NO_MDC2" /D "HAVE_OPENSSL" /D "HAVE_SSL_SET_STATE" /D "HAVE_OPENSSL_ENGINE_H" /D "HAVE_ENGINE_INIT" /D "HAVE_ENGINE_LOAD_BUILTIN_ENGINES" /Fd"Debug\mod_ssl_src" /FD /c
++# ADD CPP /nologo /MDd /W3 /EHsc /Zi /Od /I "../../include" /I "../generators" /I "../../srclib/apr/include" /I "../../srclib/apr-util/include" /I "../../srclib/openssl/inc32" /D "_DEBUG" /D "WIN32" /D "_WINDOWS" /D "WIN32_LEAN_AND_MEAN" /D "NO_IDEA" /D "NO_RC5" /D "NO_MDC2" /D "OPENSSL_NO_IDEA" /D "OPENSSL_NO_RC5" /D "OPENSSL_NO_MDC2" /D "HAVE_OPENSSL" /D "HAVE_SSL_SET_STATE" /D "HAVE_OPENSSL_ENGINE_H" /D "HAVE_ENGINE_INIT" /D "HAVE_ENGINE_LOAD_BUILTIN_ENGINES" /D "SSL_DECLARE_EXPORT" /Fd"Debug\mod_ssl_src" /FD /c
+ # ADD BASE MTL /nologo /D "_DEBUG" /win32
+ # ADD MTL /nologo /D "_DEBUG" /mktyplib203 /win32
+ # ADD BASE RSC /l 0x409 /d "_DEBUG"
 Index: modules/ssl/mod_ssl.h
 ===================================================================
 --- modules/ssl/mod_ssl.h	(revision 1589546)
