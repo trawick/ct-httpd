@@ -10,6 +10,7 @@ The svn revisions needed are:
 * r1588868 - fix a warning in new mod_ssl APIs with some unknown level of gcc
 * r1589699 - export mod\_ssl APIs when using traditional Windows build mechanism
 * r1645529 - improve error handling when rejecting proxy backend connection due to "CTProxyAwareness require" (not a critical fix)
+* r1661487 (mod_ssl.c, mod_ssl_openssl.h) - add proxy indicator to ssl pre_connection hook
 
 These revisions are bundled in the following patch, which you can apply to a checkout of the httpd 2.4.x branch to add the APIs:
 
