@@ -16,9 +16,9 @@ These revisions are bundled in the following patch, which you can apply to a che
 
 * https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/httpd-2.4.x.patch
 
-The patch has been tested with r1588854 but probably works with the 2.4.9 release tarballs as well.
+The patch has been tested with the 2.4.12 release tarballs but should work with some earlier 2.4.x releases as well.
 
-Build httpd as you normally would, ensuring that you have OpenSSL 1.0.2-beta1 or later so that mod\_ssl\_ct (which requires OpenSSL 1.0.2) and httpd and the rest of the modules are using the same level of OpenSSL.
+Build httpd as you normally would, ensuring that you have OpenSSL 1.0.2-beta3 or later so that mod\_ssl\_ct (which requires OpenSSL 1.0.2) and httpd and the rest of the modules are using the same level of OpenSSL.
 
 For example:
 ```
@@ -42,7 +42,7 @@ $ /path/to/2.4.x/bin/apxs -ci -I/path/to/openssl/include mod_ssl_ct.c ssl_ct_uti
 
 ### Building the module on Windows
 
-*TBD*
+Send me an e-mail if you actually need to do this.
 
 (in short, do something fairly obvious with the CMakeLists.txt file in the src/proto1 subdir of this repo -- https://github.com/trawick/ct-httpd/blob/master/src/proto1/CMakeLists.txt)
 
