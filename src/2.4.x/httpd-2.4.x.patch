@@ -1,7 +1,6 @@
-Index: CMakeLists.txt
-===================================================================
---- CMakeLists.txt	(revision 1661567)
-+++ CMakeLists.txt	(working copy)
+diff -Naur httpd-2.4.16/CMakeLists.txt httpd-2.4.16-patched/CMakeLists.txt
+--- httpd-2.4.16/CMakeLists.txt	2014-09-15 21:33:21.000000000 -0400
++++ httpd-2.4.16-patched/CMakeLists.txt	2015-08-13 20:42:35.549482104 -0400
 @@ -404,6 +404,7 @@
  SET(mod_session_crypto_extra_libs    mod_session)
  SET(mod_session_dbd_extra_libs       mod_session)
@@ -18,11 +17,10 @@ Index: CMakeLists.txt
  )
  # When mod_serf is buildable, don't forget to copy modules/proxy/mod_serf.h
  
-Index: Makefile.in
-===================================================================
---- Makefile.in	(revision 1661567)
-+++ Makefile.in	(working copy)
-@@ -214,6 +214,7 @@
+diff -Naur httpd-2.4.16/Makefile.in httpd-2.4.16-patched/Makefile.in
+--- httpd-2.4.16/Makefile.in	2015-04-15 14:06:04.000000000 -0400
++++ httpd-2.4.16-patched/Makefile.in	2015-08-13 20:42:35.571482105 -0400
+@@ -234,6 +234,7 @@
  	$(srcdir)/modules/proxy/mod_proxy.h \
          $(srcdir)/modules/session/mod_session.h \
  	$(srcdir)/modules/ssl/mod_ssl.h \
@@ -30,10 +28,9 @@ Index: Makefile.in
  	$(srcdir)/os/$(OS_DIR)/*.h
  
  install-include:
-Index: Makefile.win
-===================================================================
---- Makefile.win	(revision 1661567)
-+++ Makefile.win	(working copy)
+diff -Naur httpd-2.4.16/Makefile.win httpd-2.4.16-patched/Makefile.win
+--- httpd-2.4.16/Makefile.win	2014-04-16 17:00:23.000000000 -0400
++++ httpd-2.4.16-patched/Makefile.win	2015-08-13 20:42:35.571482105 -0400
 @@ -1055,6 +1055,7 @@
  		modules\mappers\mod_rewrite.h \
  		modules\proxy\mod_proxy.h \
@@ -42,23 +39,10 @@ Index: Makefile.win
            ) do \
  	    @copy %f "$(INSTDIR)\include" < .y > nul
  	copy srclib\apr\Lib$(SHORT)\apr-1.lib		"$(INSTDIR)\lib" <.y
-Index: NWGNUmakefile
-===================================================================
---- NWGNUmakefile	(revision 1661567)
-+++ NWGNUmakefile	(working copy)
-@@ -446,6 +446,7 @@
- 	$(call COPY,$(STDMOD)/proxy/mod_proxy.h,                       $(INSTALLBASE)/include/)
- 	$(call COPY,$(STDMOD)/session/mod_session.h,                   $(INSTALLBASE)/include/)
- 	$(call COPY,$(STDMOD)/ssl/mod_ssl.h,                           $(INSTALLBASE)/include/)
-+	$(call COPY,$(STDMOD)/ssl/mod_ssl_openssl.h,                   $(INSTALLBASE)/include/)
- 	$(call COPY,$(APR)/*.imp,                                      $(INSTALLBASE)/lib/)
- 	$(call COPY,$(NWOS)/*.imp,                                     $(INSTALLBASE)/lib/)
- 	$(call COPY,$(NWOS)/*.xdc,                                     $(INSTALLBASE)/lib/)
-Index: modules/proxy/mod_proxy.c
-===================================================================
---- modules/proxy/mod_proxy.c	(revision 1661567)
-+++ modules/proxy/mod_proxy.c	(working copy)
-@@ -2787,3 +2787,7 @@
+diff -Naur httpd-2.4.16/modules/proxy/mod_proxy.c httpd-2.4.16-patched/modules/proxy/mod_proxy.c
+--- httpd-2.4.16/modules/proxy/mod_proxy.c	2015-06-02 09:39:26.000000000 -0400
++++ httpd-2.4.16-patched/modules/proxy/mod_proxy.c	2015-08-13 20:42:35.571482105 -0400
+@@ -2810,3 +2810,7 @@
                                      (int *status, request_rec *r),
                                      (status, r),
                                      OK, DECLINED)
@@ -66,10 +50,9 @@ Index: modules/proxy/mod_proxy.c
 +                                    (request_rec *r, proxy_conn_rec *backend),
 +                                    (r, backend), OK, DECLINED)
 +
-Index: modules/proxy/mod_proxy.h
-===================================================================
---- modules/proxy/mod_proxy.h	(revision 1661567)
-+++ modules/proxy/mod_proxy.h	(working copy)
+diff -Naur httpd-2.4.16/modules/proxy/mod_proxy.h httpd-2.4.16-patched/modules/proxy/mod_proxy.h
+--- httpd-2.4.16/modules/proxy/mod_proxy.h	2015-04-15 13:50:46.000000000 -0400
++++ httpd-2.4.16-patched/modules/proxy/mod_proxy.h	2015-08-13 20:42:35.572482105 -0400
 @@ -513,6 +513,15 @@
  APR_DECLARE_EXTERNAL_HOOK(proxy, PROXY, int, fixups, (request_rec *r))
  
@@ -86,10 +69,9 @@ Index: modules/proxy/mod_proxy.h
   * pre request hook.
   * It will return the most suitable worker at the moment
   * and coresponding balancer.
-Index: modules/proxy/mod_proxy_http.c
-===================================================================
---- modules/proxy/mod_proxy_http.c	(revision 1661567)
-+++ modules/proxy/mod_proxy_http.c	(working copy)
+diff -Naur httpd-2.4.16/modules/proxy/mod_proxy_http.c httpd-2.4.16-patched/modules/proxy/mod_proxy_http.c
+--- httpd-2.4.16/modules/proxy/mod_proxy_http.c	2015-06-02 09:39:26.000000000 -0400
++++ httpd-2.4.16-patched/modules/proxy/mod_proxy_http.c	2015-08-13 20:55:23.714497866 -0400
 @@ -1313,6 +1313,7 @@
                  apr_table_setn(r->notes, "proxy_timedout", "1");
                  ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01103) "read timeout");
@@ -114,7 +96,7 @@ Index: modules/proxy/mod_proxy_http.c
              return ap_proxyerror(r, HTTP_BAD_GATEWAY,
                                   "Error reading from remote server");
          }
-@@ -1391,6 +1394,7 @@
+@@ -1392,6 +1395,7 @@
               * if the status line was > 8192 bytes
               */
              if ((major != 1) || (len >= sizeof(buffer)-1)) {
@@ -122,7 +104,7 @@ Index: modules/proxy/mod_proxy_http.c
                  return ap_proxyerror(r, HTTP_BAD_GATEWAY,
                  apr_pstrcat(p, "Corrupt status line returned by remote "
                              "server: ", buffer, NULL));
-@@ -1449,6 +1453,7 @@
+@@ -1450,6 +1454,7 @@
                  r->headers_out = apr_table_make(r->pool,1);
                  r->status = HTTP_BAD_GATEWAY;
                  r->status_line = "bad gateway";
@@ -130,15 +112,15 @@ Index: modules/proxy/mod_proxy_http.c
                  return r->status;
              }
  
-@@ -1658,6 +1663,7 @@
+@@ -1662,6 +1667,7 @@
                  }
                  ap_discard_request_body(backend->r);
              }
 +            proxy_run_detach_backend(r, backend);
-             return proxy_status;
-         }
- 
-@@ -1801,6 +1807,7 @@
+             /*
+              * prevent proxy_handler() from treating this as an
+              * internal error.
+@@ -1810,6 +1816,7 @@
                           * left waiting for a slow client to eventually
                           * acknowledge the data.
                           */
@@ -146,7 +128,7 @@ Index: modules/proxy/mod_proxy_http.c
                          ap_proxy_release_connection(backend->worker->s->scheme,
                                  backend, r->server);
                          /* Ensure that the backend is not reused */
-@@ -1839,6 +1846,7 @@
+@@ -1848,6 +1855,7 @@
               * left waiting for a slow client to eventually
               * acknowledge the data.
               */
@@ -154,18 +136,18 @@ Index: modules/proxy/mod_proxy_http.c
              ap_proxy_release_connection(backend->worker->s->scheme,
                      backend, r->server);
              *backend_ptr = NULL;
-@@ -1856,6 +1864,10 @@
+@@ -1865,6 +1873,10 @@
       * created from scpool and this pool can be freed before this brigade. */
      apr_brigade_cleanup(bb);
  
 +    if (*backend_ptr) {
-+        proxy_run_detach_backend(r, backend);
++      proxy_run_detach_backend(r, backend);
 +    }
 +
      /* See define of AP_MAX_INTERIM_RESPONSES for why */
      if (interim_response >= AP_MAX_INTERIM_RESPONSES) {
          return ap_proxyerror(r, HTTP_BAD_GATEWAY,
-@@ -2011,6 +2023,7 @@
+@@ -2020,6 +2032,7 @@
           */
          if ((status = ap_proxy_http_request(p, r, backend, worker,
                                          conf, uri, locurl, server_portstr)) != OK) {
@@ -173,11 +155,10 @@ Index: modules/proxy/mod_proxy_http.c
              if ((status == HTTP_SERVICE_UNAVAILABLE) && worker->s->ping_timeout_set) {
                  backend->close = 1;
                  ap_log_rerror(APLOG_MARK, APLOG_INFO, status, r, APLOGNO(01115)
-Index: modules/ssl/mod_ssl.c
-===================================================================
---- modules/ssl/mod_ssl.c	(revision 1661567)
-+++ modules/ssl/mod_ssl.c	(working copy)
-@@ -26,6 +26,7 @@
+diff -Naur httpd-2.4.16/modules/ssl/mod_ssl.c httpd-2.4.16-patched/modules/ssl/mod_ssl.c
+--- httpd-2.4.16/modules/ssl/mod_ssl.c	2015-05-23 07:13:21.000000000 -0400
++++ httpd-2.4.16-patched/modules/ssl/mod_ssl.c	2015-08-13 20:42:35.572482105 -0400
+@@ -26,12 +26,17 @@
  
  #include "ssl_private.h"
  #include "mod_ssl.h"
@@ -185,7 +166,6 @@ Index: modules/ssl/mod_ssl.c
  #include "util_md5.h"
  #include "util_mutex.h"
  #include "ap_provider.h"
-@@ -32,6 +33,10 @@
  
  #include <assert.h>
  
@@ -196,7 +176,7 @@ Index: modules/ssl/mod_ssl.c
  /*
   *  the table of configuration directives we provide
   */
-@@ -429,6 +434,7 @@
+@@ -432,6 +437,7 @@
      SSL *ssl;
      SSLConnRec *sslconn = myConnConfig(c);
      char *vhost_md5;
@@ -204,7 +184,7 @@ Index: modules/ssl/mod_ssl.c
      modssl_ctx_t *mctx;
      server_rec *server;
  
-@@ -461,6 +467,11 @@
+@@ -464,6 +470,11 @@
          return DECLINED; /* XXX */
      }
  
@@ -216,10 +196,9 @@ Index: modules/ssl/mod_ssl.c
      vhost_md5 = ap_md5_binary(c->pool, (unsigned char *)sc->vhost_id,
                                sc->vhost_id_len);
  
-Index: modules/ssl/mod_ssl.dsp
-===================================================================
---- modules/ssl/mod_ssl.dsp	(revision 1661567)
-+++ modules/ssl/mod_ssl.dsp	(working copy)
+diff -Naur httpd-2.4.16/modules/ssl/mod_ssl.dsp httpd-2.4.16-patched/modules/ssl/mod_ssl.dsp
+--- httpd-2.4.16/modules/ssl/mod_ssl.dsp	2013-11-15 12:06:18.000000000 -0500
++++ httpd-2.4.16-patched/modules/ssl/mod_ssl.dsp	2015-08-13 20:42:35.572482105 -0400
 @@ -43,7 +43,7 @@
  # PROP Ignore_Export_Lib 0
  # PROP Target_Dir ""
@@ -238,10 +217,9 @@ Index: modules/ssl/mod_ssl.dsp
  # ADD BASE MTL /nologo /D "_DEBUG" /win32
  # ADD MTL /nologo /D "_DEBUG" /mktyplib203 /win32
  # ADD BASE RSC /l 0x409 /d "_DEBUG"
-Index: modules/ssl/mod_ssl.h
-===================================================================
---- modules/ssl/mod_ssl.h	(revision 1661567)
-+++ modules/ssl/mod_ssl.h	(working copy)
+diff -Naur httpd-2.4.16/modules/ssl/mod_ssl.h httpd-2.4.16-patched/modules/ssl/mod_ssl.h
+--- httpd-2.4.16/modules/ssl/mod_ssl.h	2011-09-23 09:38:09.000000000 -0400
++++ httpd-2.4.16-patched/modules/ssl/mod_ssl.h	2015-08-13 20:42:35.572482105 -0400
 @@ -29,6 +29,27 @@
  #include "httpd.h"
  #include "apr_optional.h"
@@ -270,10 +248,9 @@ Index: modules/ssl/mod_ssl.h
  /** The ssl_var_lookup() optional function retrieves SSL environment
   * variables. */
  APR_DECLARE_OPTIONAL_FN(char *, ssl_var_lookup,
-Index: modules/ssl/mod_ssl_openssl.h
-===================================================================
---- modules/ssl/mod_ssl_openssl.h	(revision 0)
-+++ modules/ssl/mod_ssl_openssl.h	(working copy)
+diff -Naur httpd-2.4.16/modules/ssl/mod_ssl_openssl.h httpd-2.4.16-patched/modules/ssl/mod_ssl_openssl.h
+--- httpd-2.4.16/modules/ssl/mod_ssl_openssl.h	1969-12-31 19:00:00.000000000 -0500
++++ httpd-2.4.16-patched/modules/ssl/mod_ssl_openssl.h	2015-08-13 20:42:35.573482105 -0400
 @@ -0,0 +1,73 @@
 +/* Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -348,10 +325,9 @@ Index: modules/ssl/mod_ssl_openssl.h
 +
 +#endif /* __MOD_SSL_OPENSSL_H__ */
 +/** @} */
-Index: modules/ssl/ssl_engine_init.c
-===================================================================
---- modules/ssl/ssl_engine_init.c	(revision 1661567)
-+++ modules/ssl/ssl_engine_init.c	(working copy)
+diff -Naur httpd-2.4.16/modules/ssl/ssl_engine_init.c httpd-2.4.16-patched/modules/ssl/ssl_engine_init.c
+--- httpd-2.4.16/modules/ssl/ssl_engine_init.c	2015-05-27 12:33:10.000000000 -0400
++++ httpd-2.4.16-patched/modules/ssl/ssl_engine_init.c	2015-08-13 20:42:35.573482105 -0400
 @@ -27,8 +27,14 @@
                                    see Recursive.''
                                          -- Unknown   */
@@ -393,10 +369,9 @@ Index: modules/ssl/ssl_engine_init.c
      /*
       *  Announce mod_ssl and SSL library in HTTP Server field
       *  as ``mod_ssl/X.X.X OpenSSL/X.X.X''
-Index: modules/ssl/ssl_engine_io.c
-===================================================================
---- modules/ssl/ssl_engine_io.c	(revision 1661567)
-+++ modules/ssl/ssl_engine_io.c	(working copy)
+diff -Naur httpd-2.4.16/modules/ssl/ssl_engine_io.c httpd-2.4.16-patched/modules/ssl/ssl_engine_io.c
+--- httpd-2.4.16/modules/ssl/ssl_engine_io.c	2015-05-29 16:07:15.000000000 -0400
++++ httpd-2.4.16-patched/modules/ssl/ssl_engine_io.c	2015-08-13 20:42:35.573482105 -0400
 @@ -28,8 +28,13 @@
                                    core keeps dumping.''
                                              -- Unknown    */
@@ -444,3 +419,14 @@ Index: modules/ssl/ssl_engine_io.c
          }
  
          apr_table_setn(c->notes, "SSL_connect_rv", "ok");
+diff -Naur httpd-2.4.16/NWGNUmakefile httpd-2.4.16-patched/NWGNUmakefile
+--- httpd-2.4.16/NWGNUmakefile	2013-09-26 12:46:28.000000000 -0400
++++ httpd-2.4.16-patched/NWGNUmakefile	2015-08-13 20:42:35.571482105 -0400
+@@ -446,6 +446,7 @@
+ 	$(call COPY,$(STDMOD)/proxy/mod_proxy.h,                       $(INSTALLBASE)/include/)
+ 	$(call COPY,$(STDMOD)/session/mod_session.h,                   $(INSTALLBASE)/include/)
+ 	$(call COPY,$(STDMOD)/ssl/mod_ssl.h,                           $(INSTALLBASE)/include/)
++	$(call COPY,$(STDMOD)/ssl/mod_ssl_openssl.h,                   $(INSTALLBASE)/include/)
+ 	$(call COPY,$(APR)/*.imp,                                      $(INSTALLBASE)/lib/)
+ 	$(call COPY,$(NWOS)/*.imp,                                     $(INSTALLBASE)/lib/)
+ 	$(call COPY,$(NWOS)/*.xdc,                                     $(INSTALLBASE)/lib/)
