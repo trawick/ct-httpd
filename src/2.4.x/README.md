@@ -16,7 +16,7 @@ These revisions are bundled in the following patch, which you can apply to a che
 
 * https://github.com/trawick/ct-httpd/blob/master/src/2.4.x/httpd-2.4.x.patch
 
-The patch has been tested with the 2.4.12 release tarballs but should work with some earlier 2.4.x releases as well.
+The patch has been tested with the 2.4.16 release tarballs and may work with later 2.4.x releases as well.  For prior releases, check the git history for earlier versions of the patch.
 
 Build httpd as you normally would, ensuring that you have OpenSSL 1.0.2-beta3 or later so that mod\_ssl\_ct (which requires OpenSSL 1.0.2) and httpd and the rest of the modules are using the same level of OpenSSL.
 

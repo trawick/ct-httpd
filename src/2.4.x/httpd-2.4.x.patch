@@ -1,6 +1,6 @@
 Index: CMakeLists.txt
 ===================================================================
---- CMakeLists.txt	(revision 1661567)
+--- CMakeLists.txt	(revision 1696139)
 +++ CMakeLists.txt	(working copy)
 @@ -404,6 +404,7 @@
  SET(mod_session_crypto_extra_libs    mod_session)
@@ -20,9 +20,9 @@ Index: CMakeLists.txt
  
 Index: Makefile.in
 ===================================================================
---- Makefile.in	(revision 1661567)
+--- Makefile.in	(revision 1696139)
 +++ Makefile.in	(working copy)
-@@ -214,6 +214,7 @@
+@@ -234,6 +234,7 @@
  	$(srcdir)/modules/proxy/mod_proxy.h \
          $(srcdir)/modules/session/mod_session.h \
  	$(srcdir)/modules/ssl/mod_ssl.h \
@@ -32,7 +32,7 @@ Index: Makefile.in
  install-include:
 Index: Makefile.win
 ===================================================================
---- Makefile.win	(revision 1661567)
+--- Makefile.win	(revision 1696139)
 +++ Makefile.win	(working copy)
 @@ -1055,6 +1055,7 @@
  		modules\mappers\mod_rewrite.h \
@@ -44,7 +44,7 @@ Index: Makefile.win
  	copy srclib\apr\Lib$(SHORT)\apr-1.lib		"$(INSTDIR)\lib" <.y
 Index: NWGNUmakefile
 ===================================================================
---- NWGNUmakefile	(revision 1661567)
+--- NWGNUmakefile	(revision 1696139)
 +++ NWGNUmakefile	(working copy)
 @@ -446,6 +446,7 @@
  	$(call COPY,$(STDMOD)/proxy/mod_proxy.h,                       $(INSTALLBASE)/include/)
@@ -56,9 +56,9 @@ Index: NWGNUmakefile
  	$(call COPY,$(NWOS)/*.xdc,                                     $(INSTALLBASE)/lib/)
 Index: modules/proxy/mod_proxy.c
 ===================================================================
---- modules/proxy/mod_proxy.c	(revision 1661567)
+--- modules/proxy/mod_proxy.c	(revision 1696139)
 +++ modules/proxy/mod_proxy.c	(working copy)
-@@ -2787,3 +2787,7 @@
+@@ -2810,3 +2810,7 @@
                                      (int *status, request_rec *r),
                                      (status, r),
                                      OK, DECLINED)
@@ -68,7 +68,7 @@ Index: modules/proxy/mod_proxy.c
 +
 Index: modules/proxy/mod_proxy.h
 ===================================================================
---- modules/proxy/mod_proxy.h	(revision 1661567)
+--- modules/proxy/mod_proxy.h	(revision 1696139)
 +++ modules/proxy/mod_proxy.h	(working copy)
 @@ -513,6 +513,15 @@
  APR_DECLARE_EXTERNAL_HOOK(proxy, PROXY, int, fixups, (request_rec *r))
@@ -88,7 +88,7 @@ Index: modules/proxy/mod_proxy.h
   * and coresponding balancer.
 Index: modules/proxy/mod_proxy_http.c
 ===================================================================
---- modules/proxy/mod_proxy_http.c	(revision 1661567)
+--- modules/proxy/mod_proxy_http.c	(revision 1696139)
 +++ modules/proxy/mod_proxy_http.c	(working copy)
 @@ -1313,6 +1313,7 @@
                  apr_table_setn(r->notes, "proxy_timedout", "1");
@@ -114,7 +114,7 @@ Index: modules/proxy/mod_proxy_http.c
              return ap_proxyerror(r, HTTP_BAD_GATEWAY,
                                   "Error reading from remote server");
          }
-@@ -1391,6 +1394,7 @@
+@@ -1392,6 +1395,7 @@
               * if the status line was > 8192 bytes
               */
              if ((major != 1) || (len >= sizeof(buffer)-1)) {
@@ -122,7 +122,7 @@ Index: modules/proxy/mod_proxy_http.c
                  return ap_proxyerror(r, HTTP_BAD_GATEWAY,
                  apr_pstrcat(p, "Corrupt status line returned by remote "
                              "server: ", buffer, NULL));
-@@ -1449,6 +1453,7 @@
+@@ -1450,6 +1454,7 @@
                  r->headers_out = apr_table_make(r->pool,1);
                  r->status = HTTP_BAD_GATEWAY;
                  r->status_line = "bad gateway";
@@ -130,15 +130,15 @@ Index: modules/proxy/mod_proxy_http.c
                  return r->status;
              }
  
-@@ -1658,6 +1663,7 @@
-                 }
-                 ap_discard_request_body(backend->r);
-             }
+@@ -1667,6 +1672,7 @@
+              * internal error.
+              */
+             apr_table_setn(r->notes, "proxy-error-override", "1");
 +            proxy_run_detach_backend(r, backend);
              return proxy_status;
          }
  
-@@ -1801,6 +1807,7 @@
+@@ -1810,6 +1816,7 @@
                           * left waiting for a slow client to eventually
                           * acknowledge the data.
                           */
@@ -146,7 +146,7 @@ Index: modules/proxy/mod_proxy_http.c
                          ap_proxy_release_connection(backend->worker->s->scheme,
                                  backend, r->server);
                          /* Ensure that the backend is not reused */
-@@ -1839,6 +1846,7 @@
+@@ -1848,6 +1855,7 @@
               * left waiting for a slow client to eventually
               * acknowledge the data.
               */
@@ -154,7 +154,7 @@ Index: modules/proxy/mod_proxy_http.c
              ap_proxy_release_connection(backend->worker->s->scheme,
                      backend, r->server);
              *backend_ptr = NULL;
-@@ -1856,6 +1864,10 @@
+@@ -1865,6 +1873,10 @@
       * created from scpool and this pool can be freed before this brigade. */
      apr_brigade_cleanup(bb);
  
@@ -165,7 +165,7 @@ Index: modules/proxy/mod_proxy_http.c
      /* See define of AP_MAX_INTERIM_RESPONSES for why */
      if (interim_response >= AP_MAX_INTERIM_RESPONSES) {
          return ap_proxyerror(r, HTTP_BAD_GATEWAY,
-@@ -2011,6 +2023,7 @@
+@@ -2020,6 +2032,7 @@
           */
          if ((status = ap_proxy_http_request(p, r, backend, worker,
                                          conf, uri, locurl, server_portstr)) != OK) {
@@ -175,7 +175,7 @@ Index: modules/proxy/mod_proxy_http.c
                  ap_log_rerror(APLOG_MARK, APLOG_INFO, status, r, APLOGNO(01115)
 Index: modules/ssl/mod_ssl.c
 ===================================================================
---- modules/ssl/mod_ssl.c	(revision 1661567)
+--- modules/ssl/mod_ssl.c	(revision 1696139)
 +++ modules/ssl/mod_ssl.c	(working copy)
 @@ -26,6 +26,7 @@
  
@@ -196,7 +196,7 @@ Index: modules/ssl/mod_ssl.c
  /*
   *  the table of configuration directives we provide
   */
-@@ -429,6 +434,7 @@
+@@ -432,6 +437,7 @@
      SSL *ssl;
      SSLConnRec *sslconn = myConnConfig(c);
      char *vhost_md5;
@@ -204,7 +204,7 @@ Index: modules/ssl/mod_ssl.c
      modssl_ctx_t *mctx;
      server_rec *server;
  
-@@ -461,6 +467,11 @@
+@@ -464,6 +470,11 @@
          return DECLINED; /* XXX */
      }
  
@@ -218,7 +218,7 @@ Index: modules/ssl/mod_ssl.c
  
 Index: modules/ssl/mod_ssl.dsp
 ===================================================================
---- modules/ssl/mod_ssl.dsp	(revision 1661567)
+--- modules/ssl/mod_ssl.dsp	(revision 1696139)
 +++ modules/ssl/mod_ssl.dsp	(working copy)
 @@ -43,7 +43,7 @@
  # PROP Ignore_Export_Lib 0
@@ -240,7 +240,7 @@ Index: modules/ssl/mod_ssl.dsp
  # ADD BASE RSC /l 0x409 /d "_DEBUG"
 Index: modules/ssl/mod_ssl.h
 ===================================================================
---- modules/ssl/mod_ssl.h	(revision 1661567)
+--- modules/ssl/mod_ssl.h	(revision 1696139)
 +++ modules/ssl/mod_ssl.h	(working copy)
 @@ -29,6 +29,27 @@
  #include "httpd.h"
@@ -350,7 +350,7 @@ Index: modules/ssl/mod_ssl_openssl.h
 +/** @} */
 Index: modules/ssl/ssl_engine_init.c
 ===================================================================
---- modules/ssl/ssl_engine_init.c	(revision 1661567)
+--- modules/ssl/ssl_engine_init.c	(revision 1696139)
 +++ modules/ssl/ssl_engine_init.c	(working copy)
 @@ -27,8 +27,14 @@
                                    see Recursive.''
@@ -395,7 +395,7 @@ Index: modules/ssl/ssl_engine_init.c
       *  as ``mod_ssl/X.X.X OpenSSL/X.X.X''
 Index: modules/ssl/ssl_engine_io.c
 ===================================================================
---- modules/ssl/ssl_engine_io.c	(revision 1661567)
+--- modules/ssl/ssl_engine_io.c	(revision 1696139)
 +++ modules/ssl/ssl_engine_io.c	(working copy)
 @@ -28,8 +28,13 @@
                                    core keeps dumping.''
