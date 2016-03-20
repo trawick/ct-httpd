@@ -3,6 +3,9 @@ mod\_ssl\_ct with httpd 2.4.x
 
 ## New APIs in mod_ssl and mod_proxy
 
+**No longer needed as of httpd 2.4.19**.  However, environment variables ``SSL_CT_PROXY_STATUS`` and
+``SSL_CT_PROXY_SCT_SOURCES`` won't be set.
+
 The svn revisions needed are:
 
 * r1586719 - add the mod_proxy API
