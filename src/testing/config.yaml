@@ -1,0 +1,4 @@
+httpd:
+    install_root: /home/trawick/inst/ct24-64
+certificate-transparency:
+    source_root: /home/trawick/test-build-ct-2015-01-16/certificate-transparency
