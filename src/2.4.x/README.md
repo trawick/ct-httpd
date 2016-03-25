@@ -1,10 +1,26 @@
-mod\_ssl\_ct with httpd 2.4.x
-=============================
+mod\_ssl\_ct with some httpd 2.4
+================================
+
+You'll use an svn checkout of httpd trunk to get mod\_ssl\_ct, and compile and install that module using ``apxs`` from
+your httpd 2.4 install.  Depending on the level of httpd 2.4, it may need to be patched first.  See the following 
+sections for more details.
+
+mod\_ssl\_ct with httpd 2.4.20 and higher
+=========================================
+
+No patches to httpd 2.4 are required starting with 2.4.20.  However, environment variables ``SSL_CT_PROXY_STATUS`` and
+``SSL_CT_PROXY_SCT_SOURCES`` won't be set.  (The proxy API added in trunk requires too many changes to backport; a simpler
+model is needed for filling in those environment variables.  The issue is having the backend connection and the frontend
+``request_rec`` available at the same time, at a point that a hook can be called.)
+
+mod\_ssl\_ct with httpd 2.4.18 and 2.4.17
+=========================================
+
+When checking out httpd trunk to get mod\_ssl\_ct, get revision 1735948 if you want ``SSL_CT_PROXY_STATUS`` and
+``SSL_CT_PROXY_SCT_SOURCES`` to be set.  As of later revisions, mod\_ssl\_ct in trunk is ready to be compiled with
+httpd 2.4.20 or later.
 
 ## New APIs in mod_ssl and mod_proxy
-
-**No longer needed as of httpd 2.4.19**.  However, environment variables ``SSL_CT_PROXY_STATUS`` and
-``SSL_CT_PROXY_SCT_SOURCES`` won't be set.
 
 The svn revisions needed are:
 
